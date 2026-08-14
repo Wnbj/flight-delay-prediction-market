@@ -39,18 +39,27 @@ function derivePositions(
     const s = stakes[i];
     if (!s || (s.yes === 0n && s.no === 0n)) return;
 
-    const claimable = s.claimed ? 0n : claimablePayout(m, s.yes, s.no);
+    const entitlement = claimablePayout(m, s.yes, s.no);
+    const claimable = s.claimed ? 0n : entitlement;
 
     let status: Position["status"];
     if (s.claimed) status = "Claimed";
     else if (m.status === MarketStatus.Void) status = "Refundable";
     else if (m.status === MarketStatus.Settled) {
-      status = claimable > 0n ? "Won" : "Lost";
+      status = entitlement > 0n ? "Won" : "Lost";
     } else if (m.status === MarketStatus.SettlementRequested) {
       status = "Awaiting settlement";
     } else status = "Open";
 
-    out.push({ market: m, yes: s.yes, no: s.no, claimed: s.claimed, claimable, status });
+    out.push({
+      market: m,
+      yes: s.yes,
+      no: s.no,
+      claimed: s.claimed,
+      claimable,
+      entitlement,
+      status,
+    });
   });
   return out;
 }

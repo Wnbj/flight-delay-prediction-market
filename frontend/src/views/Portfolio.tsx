@@ -43,9 +43,9 @@ export function Portfolio({
       const resolved =
         p.market.status === MarketStatus.Settled || p.market.status === MarketStatus.Void;
       if (resolved) {
-        // Claimed positions have already paid out; unclaimed ones are still owed.
-        const payout = p.claimed ? null : p.claimable;
-        if (payout !== null) realised += payout - size;
+        // Measured against the entitlement, not what is still claimable —
+        // otherwise claiming a win would erase it from the total.
+        realised += p.entitlement - size;
       } else {
         open += 1;
       }
@@ -177,7 +177,7 @@ export function Portfolio({
                 const resolved =
                   p.market.status === MarketStatus.Settled ||
                   p.market.status === MarketStatus.Void;
-                const pl = resolved && !p.claimed ? p.claimable - size : null;
+                const pl = resolved ? p.entitlement - size : null;
                 const side =
                   p.yes > 0n && p.no > 0n ? "Both" : p.yes > 0n ? "Yes" : "No";
 

@@ -61,8 +61,14 @@ export interface Position {
   yes: bigint;
   no: bigint;
   claimed: boolean;
-  /** What claim() would pay right now — 0 if nothing is claimable. */
+  /** What claim() would pay right now — 0 once claimed, or while unresolved. */
   claimable: bigint;
+  /**
+   * What this position is owed in total, whether or not it has been claimed.
+   * P&L must be measured against this: netting off already-claimed positions
+   * would report a winning wallet as flat or losing.
+   */
+  entitlement: bigint;
   status: "Open" | "Awaiting settlement" | "Won" | "Lost" | "Refundable" | "Claimed";
 }
 
