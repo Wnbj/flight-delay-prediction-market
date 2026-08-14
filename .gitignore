@@ -16,3 +16,6 @@ flight-market/**/.cre_build_tmp.js
 contracts/lib/
 contracts/out/
 contracts/cache/
+
+# frontend build output
+frontend/dist/

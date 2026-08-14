@@ -1,0 +1,209 @@
+import { TOKEN_SYMBOL } from "../lib/config";
+import { formatToken, initials, shortAddress } from "../lib/format";
+import type { WalletState } from "../hooks/useWallet";
+import type { View } from "../lib/view";
+
+const LINKS: { view: View; label: string }[] = [
+  { view: "markets", label: "Markets" },
+  { view: "portfolio", label: "Portfolio" },
+  { view: "leaderboard", label: "Leaderboard" },
+];
+
+export function Nav({
+  view,
+  onNavigate,
+  wallet,
+  balance,
+}: {
+  view: View;
+  onNavigate: (v: View) => void;
+  wallet: WalletState;
+  balance: bigint;
+}) {
+  const isActive = (v: View) =>
+    v === "markets" ? view === "markets" || view === "detail" : view === v;
+
+  return (
+    <>
+      <div
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: "var(--space-4)",
+          padding: "8.4px var(--page-x)",
+          position: "sticky",
+          top: 0,
+          zIndex: 20,
+          background: "var(--color-bg)",
+          flexWrap: "wrap",
+        }}
+      >
+        <div
+          style={{ display: "flex", alignItems: "center", gap: 9, cursor: "pointer" }}
+          onClick={() => onNavigate("landing")}
+        >
+          <svg viewBox="0 0 24 24" width="24" height="24" fill="none" aria-hidden="true">
+            <rect
+              x="1"
+              y="1"
+              width="22"
+              height="22"
+              rx="6"
+              stroke="var(--color-accent)"
+              strokeWidth="1.6"
+            />
+            <path
+              d="M7 15l4-4 3 3 4-6"
+              stroke="var(--color-accent)"
+              strokeWidth="1.6"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </svg>
+          <span className="heading" style={{ fontSize: 18 }}>
+            PredictSafe
+          </span>
+        </div>
+
+        {LINKS.map((l) => (
+          <a
+            key={l.view}
+            href="#"
+            onClick={(e) => {
+              e.preventDefault();
+              onNavigate(l.view);
+            }}
+            style={{
+              fontSize: 14,
+              textDecoration: "none",
+              color: isActive(l.view) ? "var(--color-accent)" : "var(--color-text)",
+            }}
+          >
+            {l.label}
+          </a>
+        ))}
+
+        <div
+          style={{
+            marginLeft: "auto",
+            display: "flex",
+            alignItems: "center",
+            gap: "var(--space-4)",
+            flexWrap: "wrap",
+          }}
+        >
+          {wallet.account && (
+            <div
+              className="muted"
+              style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13 }}
+              title={`${TOKEN_SYMBOL} balance`}
+            >
+              <WalletIcon />
+              <span style={{ color: "var(--color-text)" }}>{formatToken(balance)}</span>
+            </div>
+          )}
+
+          {wallet.account ? (
+            <>
+              <span
+                className="muted"
+                style={{ fontSize: 13 }}
+                title={wallet.account}
+              >
+                {shortAddress(wallet.account)}
+              </span>
+              <div
+                style={{
+                  width: 30,
+                  height: 30,
+                  borderRadius: "50%",
+                  background: "var(--color-accent-800)",
+                  color: "var(--color-accent-100)",
+                  display: "flex",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  fontSize: 12,
+                  fontWeight: 600,
+                }}
+              >
+                {initials(wallet.account)}
+              </div>
+            </>
+          ) : (
+            <button
+              className="btn btn-accent"
+              onClick={() => void wallet.connect()}
+              disabled={wallet.connecting}
+            >
+              {wallet.connecting ? "Connecting…" : "Connect wallet"}
+            </button>
+          )}
+        </div>
+      </div>
+
+      <div className="divider" />
+
+      {wallet.wrongNetwork && (
+        <Banner>
+          Wrong network — this app runs on Sepolia.{" "}
+          <button
+            className="btn btn-accent"
+            style={{ padding: "4px 10px", fontSize: 13, marginLeft: 8 }}
+            onClick={() => void wallet.switchNetwork()}
+          >
+            Switch to Sepolia
+          </button>
+        </Banner>
+      )}
+
+      {wallet.error && <Banner tone="error">{wallet.error}</Banner>}
+    </>
+  );
+}
+
+function Banner({
+  children,
+  tone = "warn",
+}: {
+  children: React.ReactNode;
+  tone?: "warn" | "error";
+}) {
+  return (
+    <div
+      style={{
+        padding: "10px var(--page-x)",
+        fontSize: 13,
+        background:
+          tone === "error"
+            ? "color-mix(in srgb, var(--color-negative) 12%, transparent)"
+            : "color-mix(in srgb, var(--color-accent) 12%, transparent)",
+        color: tone === "error" ? "var(--color-negative)" : "var(--color-accent-200)",
+        display: "flex",
+        alignItems: "center",
+        flexWrap: "wrap",
+      }}
+    >
+      {children}
+    </div>
+  );
+}
+
+function WalletIcon() {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      width="16"
+      height="16"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.6"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <rect x="2.5" y="6" width="19" height="13" rx="2.5" />
+      <path d="M2.5 9.5h19" />
+      <circle cx="17" cy="13.5" r="1.2" fill="currentColor" stroke="none" />
+    </svg>
+  );
+}
