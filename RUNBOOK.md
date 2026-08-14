@@ -127,8 +127,16 @@ Then put that URL in `flight-market/flight-settlement/config.staging.json`.
 | `{"status":"landed","arrivalDelayMinutes":15}` | 2 = No |
 | `{"status":"airborne","arrivalDelayMinutes":null}` | 3 = Void |
 
-All three verified (against the pre-`ReceiverTemplate` contract; the resolution
-logic in `_processReport` is unchanged, so they still hold).
+All three re-verified end-to-end on the `ReceiverTemplate`-based contract on
+real Sepolia (contract `0x09068efb21fabeac59694e01428cf438cf38e2b3`), each on
+its own market, confirmed via direct `cast call` on-chain state (not CLI
+output):
+
+| market | outcome | on-chain status | on-chain outcome |
+|---|---|---|---|
+| 0 | Yes (delay 42) | 3 (Settled) | 1 |
+| 1 | No (delay 15)  | 3 (Settled) | 2 |
+| 2 | Void (airborne) | 4 (Void)   | 3 |
 
 ## Appendix: free local rehearsal via anvil fork
 

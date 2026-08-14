@@ -1,6 +1,6 @@
 {
   "contractAddress": "0x09068efb21fabeac59694e01428cf438cf38e2b3",
   "chainSelectorName": "ethereum-testnet-sepolia",
-  "apiUrl": "https://gist.githubusercontent.com/Wnbj/c0d43e5e48303654c2c5219d815495e4/raw/40db78adfd76302930a03f204e42b138b17ff70b/flight-status.json",
+  "apiUrl": "https://gist.githubusercontent.com/Wnbj/c0d43e5e48303654c2c5219d815495e4/raw/7699562500147a47bd5fbe8535b097bbb50a5715/flight-status.json",
   "gasLimit": "1000000"
 }
