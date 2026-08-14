@@ -63,13 +63,39 @@ export function useWallet(): WalletState {
       return;
     }
     setError(null);
+
+    /*
+     * A wallet can answer this request by never answering it at all — a popup
+     * left queued from an earlier dismissal produces no window and no error, so
+     * the click looks like it did nothing. This timer only ever sets an
+     * explanatory message; it gates nothing, so it cannot wedge the UI.
+     */
+    let settled = false;
+    const silentHint = setTimeout(() => {
+      if (!settled) {
+        setError(
+          "No response from the wallet. Open the MetaMask extension — a connection request may be waiting there.",
+        );
+      }
+    }, 12_000);
+
     try {
       const accounts = (await provider.request({
         method: "eth_requestAccounts",
       })) as Address[];
-      setAccount(accounts[0] ?? null);
+      settled = true;
+      clearTimeout(silentHint);
+      if (accounts.length === 0) {
+        // Resolving empty is not an error to the wallet, but it is to us:
+        // without this the click would silently leave everything unchanged.
+        setError("The wallet returned no accounts. Unlock MetaMask and try again.");
+        return;
+      }
+      setAccount(accounts[0]);
       await readChain();
     } catch (e) {
+      settled = true;
+      clearTimeout(silentHint);
       const code = (e as { code?: number }).code;
       if (code === -32002) {
         setError(
