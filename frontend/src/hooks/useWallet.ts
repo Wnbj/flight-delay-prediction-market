@@ -35,6 +35,8 @@ export function useWallet(): WalletState {
    * back in moments after they asked to leave.
    */
   const [dismissed, setDismissed] = useState(false);
+  /** Bumped per connect click so the "Connecting…" timeout restarts each time. */
+  const [attemptId, setAttemptId] = useState(0);
 
   const provider = getInjectedProvider();
   const hasProvider = provider !== null;
@@ -62,6 +64,9 @@ export function useWallet(): WalletState {
       setError("No browser wallet detected. Install MetaMask to trade.");
       return;
     }
+    // Restarts the label's timeout, so a second click gets its own countdown
+    // rather than inheriting the remains of the first.
+    setAttemptId((n) => n + 1);
     setConnecting(true);
     setError(null);
     try {
@@ -176,14 +181,20 @@ export function useWallet(): WalletState {
   }, [attempted]);
 
   /**
-   * Backstop for setups where the popup never blurs the page, so no focus event
-   * arrives. Without this the label could still stick indefinitely.
+   * "Connecting…" is only click feedback, so it is strictly time-boxed rather
+   * than tied to the request settling.
+   *
+   * The request itself is not a reliable signal — it never settles if the popup
+   * is dismissed — and neither is focus: clicking the button repeatedly never
+   * blurs the page, so no focus event arrives and the label would hang. A short
+   * fixed window can't get stuck either way. If the wallet does answer, the
+   * account appears and the UI updates regardless of this label.
    */
   useEffect(() => {
     if (!connecting) return;
-    const t = setTimeout(() => setConnecting(false), 45_000);
+    const t = setTimeout(() => setConnecting(false), 3_000);
     return () => clearTimeout(t);
-  }, [connecting]);
+  }, [connecting, attemptId]);
 
   const switchNetwork = useCallback(async () => {
     if (!provider) return;
