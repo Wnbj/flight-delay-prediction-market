@@ -65,6 +65,22 @@ export function useWallet(): WalletState {
     setError(null);
 
     /*
+     * Every click should be a fresh ask, not another one queued behind a stale
+     * prompt. Revoking first drops any permission MetaMask is still holding,
+     * which in most builds also takes down a leftover approval screen.
+     *
+     * It is best-effort by necessity: nothing in the provider API cancels an
+     * already-pending request, and this call can itself queue behind one — so
+     * it races a short timer and we continue regardless of the outcome.
+     */
+    await Promise.race([
+      provider
+        .request({ method: "wallet_revokePermissions", params: [{ eth_accounts: {} }] })
+        .catch(() => undefined),
+      new Promise((r) => setTimeout(r, 600)),
+    ]);
+
+    /*
      * A request dismissed by clicking outside the popup stays queued inside
      * MetaMask. Every later request then hangs behind it: no window, no error,
      * nothing. Only the user can clear that, from the extension itself.
