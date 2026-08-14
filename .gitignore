@@ -1,0 +1,18 @@
+# macOS
+.DS_Store
+
+# secrets — never commit private keys / RPC secrets
+.env
+.env.*
+*.env
+
+# node
+node_modules/
+
+# CRE build artifacts
+flight-market/**/.cre_build_tmp.js
+
+# Foundry — regenerable via `forge install` / `forge build`
+contracts/lib/
+contracts/out/
+contracts/cache/
