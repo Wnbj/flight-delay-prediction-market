@@ -97,39 +97,31 @@ export function useWallet(): WalletState {
   }, [provider, attempted]);
 
   /**
-   * The wallet popup steals focus; closing it hands focus back. That return is
-   * the only signal we get when a request is dismissed rather than answered,
-   * since the promise itself never settles. On focus we re-read accounts:
-   * present means it was approved out-of-band, absent means it was dismissed
-   * and the "Connecting…" state must be cleared either way.
+   * The wallet popup steals focus; closing it hands focus back, which is our
+   * only signal that a request was dismissed rather than answered.
+   *
+   * This handler must NOT call the provider. MetaMask keeps a dismissed
+   * `eth_requestAccounts` queued, and any further request while one is pending
+   * makes it re-open the popup — so probing here would reopen the window the
+   * user just closed, on every focus.
+   *
+   * Nothing is lost by staying silent: if the user approves the queued request
+   * later, the original promise resolves and `accountsChanged` fires. Both
+   * paths already set the account.
    */
   useEffect(() => {
-    if (!provider || !attempted) return;
-
-    const onReturn = async () => {
+    if (!attempted) return;
+    const onReturn = () => {
       if (document.visibilityState === "hidden") return;
-      // Let an approval that just landed commit before calling it a dismissal.
-      await new Promise((r) => setTimeout(r, 350));
-      try {
-        const accounts = (await provider.request({ method: "eth_accounts" })) as Address[];
-        if (accounts.length > 0) {
-          setAccount(accounts[0]);
-          setError(null);
-          await readChain();
-        }
-      } catch {
-        /* ignore */
-      }
       setConnecting(false);
     };
-
     window.addEventListener("focus", onReturn);
     document.addEventListener("visibilitychange", onReturn);
     return () => {
       window.removeEventListener("focus", onReturn);
       document.removeEventListener("visibilitychange", onReturn);
     };
-  }, [provider, attempted, readChain]);
+  }, [attempted]);
 
   /**
    * Backstop for setups where the popup never blurs the page, so no focus event
