@@ -65,19 +65,28 @@ export function useWallet(): WalletState {
     setError(null);
 
     /*
-     * A wallet can answer this request by never answering it at all — a popup
-     * left queued from an earlier dismissal produces no window and no error, so
-     * the click looks like it did nothing. This timer only ever sets an
-     * explanatory message; it gates nothing, so it cannot wedge the UI.
+     * A request dismissed by clicking outside the popup stays queued inside
+     * MetaMask. Every later request then hangs behind it: no window, no error,
+     * nothing. Only the user can clear that, from the extension itself.
+     *
+     * There is no dependable way to tell "popup open" from "popup stuck":
+     * document.hasFocus() is false whenever the browser window itself is not
+     * frontmost, so it reports a stuck request for anyone who simply looked at
+     * another app. So the message is worded to hold in both cases and shown
+     * whenever the request is still unanswered after a moment.
+     *
+     * This only ever sets a message — it gates nothing and cannot wedge the UI.
+     * It clears by itself as soon as an account arrives.
      */
     let settled = false;
     const silentHint = setTimeout(() => {
       if (!settled) {
         setError(
-          "No response from the wallet. Open the MetaMask extension — a connection request may be waiting there.",
+          "Waiting for MetaMask. If no window opened, it still has an earlier request queued — " +
+            "click the MetaMask icon in your browser toolbar to approve or reject it, then connect again.",
         );
       }
-    }, 12_000);
+    }, 2_000);
 
     try {
       const accounts = (await provider.request({
