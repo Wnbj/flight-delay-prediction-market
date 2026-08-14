@@ -108,7 +108,7 @@ export function Nav({
             <AccountMenu account={wallet.account} onDisconnect={wallet.disconnect} />
           ) : (
             <button className="btn btn-accent" onClick={() => void wallet.connect()}>
-              {wallet.connecting ? "Connecting…" : "Connect wallet"}
+              Connect wallet
             </button>
           )}
         </div>

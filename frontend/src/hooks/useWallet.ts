@@ -6,7 +6,6 @@ import { getInjectedProvider } from "../lib/chain";
 export interface WalletState {
   account: Address | null;
   chainId: number | null;
-  connecting: boolean;
   error: string | null;
   hasProvider: boolean;
   wrongNetwork: boolean;
@@ -21,11 +20,18 @@ export interface WalletState {
  * event listeners on mount — so loading the page never surfaces a wallet prompt
  * and never fingerprints the visitor. Browsing markets works entirely off the
  * public RPC.
+ *
+ * There is deliberately no transient "connecting" state. Leaving it needs a
+ * signal that the request finished, and none of the available ones are
+ * dependable: `eth_requestAccounts` never settles when the popup is dismissed,
+ * and window focus never returns if the popup did not take focus in the first
+ * place. Any such state therefore risks sticking and making the button look
+ * dead. The wallet's own popup is the feedback that the click registered, and
+ * the button stays live so a second click always does something.
  */
 export function useWallet(): WalletState {
   const [account, setAccount] = useState<Address | null>(null);
   const [chainId, setChainId] = useState<number | null>(null);
-  const [connecting, setConnecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   /** Flips only when the user actively asks to connect. Gates all provider I/O. */
   const [attempted, setAttempted] = useState(false);
@@ -35,8 +41,6 @@ export function useWallet(): WalletState {
    * back in moments after they asked to leave.
    */
   const [dismissed, setDismissed] = useState(false);
-  /** Bumped per connect click so the "Connecting…" timeout restarts each time. */
-  const [attemptId, setAttemptId] = useState(0);
 
   const provider = getInjectedProvider();
   const hasProvider = provider !== null;
@@ -51,12 +55,6 @@ export function useWallet(): WalletState {
     }
   }, [provider]);
 
-  /**
-   * Closing the MetaMask popup without approving or rejecting leaves
-   * eth_requestAccounts unsettled forever, so no `finally` can run here.
-   * `connecting` is therefore only ever a label hint and must never gate the
-   * button, or dismissing the popup would lock the user out until a reload.
-   */
   const connect = useCallback(async () => {
     setAttempted(true);
     setDismissed(false);
@@ -64,10 +62,6 @@ export function useWallet(): WalletState {
       setError("No browser wallet detected. Install MetaMask to trade.");
       return;
     }
-    // Restarts the label's timeout, so a second click gets its own countdown
-    // rather than inheriting the remains of the first.
-    setAttemptId((n) => n + 1);
-    setConnecting(true);
     setError(null);
     try {
       const accounts = (await provider.request({
@@ -75,7 +69,6 @@ export function useWallet(): WalletState {
       })) as Address[];
       setAccount(accounts[0] ?? null);
       await readChain();
-      setConnecting(false);
     } catch (e) {
       const code = (e as { code?: number }).code;
       if (code === -32002) {
@@ -87,7 +80,6 @@ export function useWallet(): WalletState {
       } else {
         setError(e instanceof Error ? e.message : "Failed to connect");
       }
-      setConnecting(false);
     }
   }, [provider, readChain]);
 
@@ -98,7 +90,6 @@ export function useWallet(): WalletState {
       const accounts = args[0] as Address[];
       // Respect an explicit disconnect; only a fresh connect() re-opts in.
       setAccount(accounts.length > 0 && !dismissed ? accounts[0] : null);
-      setConnecting(false);
     };
     const onChain = (...args: unknown[]) => {
       setChainId(Number.parseInt(args[0] as string, 16));
@@ -122,7 +113,6 @@ export function useWallet(): WalletState {
     setAccount(null);
     setChainId(null);
     setError(null);
-    setConnecting(false);
     setDismissed(true);
     try {
       await provider?.request({
@@ -153,49 +143,6 @@ export function useWallet(): WalletState {
     void readChain();
   }, [account, readChain]);
 
-  /**
-   * The wallet popup steals focus; closing it hands focus back, which is our
-   * only signal that a request was dismissed rather than answered.
-   *
-   * This handler must NOT call the provider. MetaMask keeps a dismissed
-   * `eth_requestAccounts` queued, and any further request while one is pending
-   * makes it re-open the popup — so probing here would reopen the window the
-   * user just closed, on every focus.
-   *
-   * Nothing is lost by staying silent: if the user approves the queued request
-   * later, the original promise resolves and `accountsChanged` fires. Both
-   * paths already set the account.
-   */
-  useEffect(() => {
-    if (!attempted) return;
-    const onReturn = () => {
-      if (document.visibilityState === "hidden") return;
-      setConnecting(false);
-    };
-    window.addEventListener("focus", onReturn);
-    document.addEventListener("visibilitychange", onReturn);
-    return () => {
-      window.removeEventListener("focus", onReturn);
-      document.removeEventListener("visibilitychange", onReturn);
-    };
-  }, [attempted]);
-
-  /**
-   * "Connecting…" is only click feedback, so it is strictly time-boxed rather
-   * than tied to the request settling.
-   *
-   * The request itself is not a reliable signal — it never settles if the popup
-   * is dismissed — and neither is focus: clicking the button repeatedly never
-   * blurs the page, so no focus event arrives and the label would hang. A short
-   * fixed window can't get stuck either way. If the wallet does answer, the
-   * account appears and the UI updates regardless of this label.
-   */
-  useEffect(() => {
-    if (!connecting) return;
-    const t = setTimeout(() => setConnecting(false), 3_000);
-    return () => clearTimeout(t);
-  }, [connecting, attemptId]);
-
   const switchNetwork = useCallback(async () => {
     if (!provider) return;
     setError(null);
@@ -212,7 +159,6 @@ export function useWallet(): WalletState {
   return {
     account,
     chainId,
-    connecting,
     error,
     hasProvider,
     wrongNetwork: account !== null && chainId !== null && chainId !== chain.id,
