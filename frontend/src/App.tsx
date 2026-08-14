@@ -58,6 +58,20 @@ export default function App() {
         </div>
       )}
 
+      {!data.error && data.historyDegraded && (
+        <div
+          style={{
+            padding: "10px var(--page-x)",
+            fontSize: 13,
+            color: "var(--color-accent-200)",
+            background: "color-mix(in srgb, var(--color-accent) 12%, transparent)",
+          }}
+        >
+          Trade history is unavailable from the RPC right now — charts, activity and the
+          leaderboard may be incomplete. Market figures are unaffected.
+        </div>
+      )}
+
       {data.loading ? (
         <div className="page muted">Loading markets from Sepolia…</div>
       ) : (

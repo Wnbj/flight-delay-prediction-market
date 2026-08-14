@@ -135,11 +135,19 @@ export function Detail({
               flexWrap: "wrap",
             }}
           >
-            <div className="heading" style={{ fontSize: 44, color: "var(--color-accent)" }}>
-              {formatPercent(yes)}
-            </div>
+            {/* An em-dash at 44px reads as a stray rule, not as "no data yet". */}
+            {yes === null ? (
+              <div className="heading muted" style={{ fontSize: 22 }}>
+                No odds yet
+              </div>
+            ) : (
+              <div className="heading" style={{ fontSize: 44, color: "var(--color-accent)" }}>
+                {formatPercent(yes)}
+              </div>
+            )}
             <div className="muted" style={{ fontSize: 13 }}>
-              implied chance of Yes · {formatToken(totalPool(market))} staked ·{" "}
+              {yes === null ? "first stake sets the price" : "implied chance of Yes"} ·{" "}
+              {formatToken(totalPool(market))} staked ·{" "}
               {market.status === MarketStatus.Open && now < market.closeTime
                 ? `closes ${formatRelative(market.closeTime, now)}`
                 : statusLabel(market.status)}

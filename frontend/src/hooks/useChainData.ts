@@ -27,6 +27,8 @@ export interface ChainData {
   allowance: bigint;
   loading: boolean;
   error: string | null;
+  /** Markets loaded but event history did not — charts and leaderboard are thin. */
+  historyDegraded: boolean;
   refresh: () => Promise<void>;
 }
 
@@ -128,19 +130,28 @@ export function useChainData(account: Address | null): ChainData {
   const [balance, setBalance] = useState<bigint>(0n);
   const [allowance, setAllowance] = useState<bigint>(0n);
   const [loading, setLoading] = useState(true);
+  const [historyDegraded, setHistoryDegraded] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const refresh = useCallback(async () => {
     setError(null);
     try {
-      const [ms, se, sv] = await Promise.all([
-        readMarkets(),
-        readStakeEvents(),
-        readSettledEvents(),
-      ]);
+      /*
+       * Markets are the page; event history only enriches it (sparklines,
+       * activity, leaderboard). Public RPCs fail getLogs often enough that
+       * tying the two together would blank the whole app over a flaky log
+       * query, so events are allowed to fail on their own.
+       */
+      const ms = await readMarkets();
       setMarkets(ms);
-      setStakeEvents(se);
-      setSettledEvents(sv);
+
+      const [se, sv] = await Promise.all([
+        readStakeEvents().catch(() => null),
+        readSettledEvents().catch(() => null),
+      ]);
+      if (se) setStakeEvents(se);
+      if (sv) setSettledEvents(sv);
+      setHistoryDegraded(se === null || sv === null);
 
       if (account) {
         const [stakes, bal, allow] = await Promise.all([
@@ -177,6 +188,7 @@ export function useChainData(account: Address | null): ChainData {
     allowance,
     loading,
     error,
+    historyDegraded,
     refresh,
   };
 }

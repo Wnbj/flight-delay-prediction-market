@@ -141,16 +141,26 @@ const SETTLED_EVENT = parseAbiItem(
   "event Settled(uint256 indexed marketId, uint8 outcome, int32 observedDelay, bytes32 evidenceHash)",
 );
 
-/** Public RPCs cap getLogs spans, so walk the range in chunks. */
+/**
+ * Public RPCs cap getLogs spans, so walk the range in chunks.
+ *
+ * The final chunk asks for "latest" rather than the block number we just read.
+ * These endpoints sit behind a load balancer: eth_blockNumber can be answered
+ * by a node that is ahead of the one that then serves eth_getLogs, which
+ * rejects the range as extending beyond its head. Letting the serving node
+ * decide its own upper bound removes the mismatch entirely.
+ */
 async function logsInChunks<T>(
-  fetchRange: (from: bigint, to: bigint) => Promise<T[]>,
+  fetchRange: (from: bigint, to: bigint | "latest") => Promise<T[]>,
 ): Promise<T[]> {
   const latest = await publicClient.getBlockNumber();
   const STEP = 45_000n;
   const out: T[] = [];
   for (let from = DEPLOY_BLOCK; from <= latest; from += STEP) {
-    const to = from + STEP - 1n > latest ? latest : from + STEP - 1n;
-    out.push(...(await fetchRange(from, to)));
+    const end = from + STEP - 1n;
+    const reachesHead = end >= latest;
+    out.push(...(await fetchRange(from, reachesHead ? "latest" : end)));
+    if (reachesHead) break;
   }
   return out;
 }
