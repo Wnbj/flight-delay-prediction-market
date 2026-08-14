@@ -1,10 +1,21 @@
 # Flight-delay prediction market — POC runbook
 
 End-to-end settlement (real Sepolia log trigger → CRE workflow → real
-`onReport()` write, verified via on-chain state, not just CLI output) is
-**proven**. `FlightMarket.sol` inherits `ReceiverTemplate` (from
-smartcontractkit/cre-gcp-prediction-market-demo) for forwarder/author/name
-validation instead of hand-rolled checks.
+`onReport()` write → real `claim()` payout, all verified via on-chain state,
+not just CLI output) is **proven**. `FlightMarket.sol` inherits
+`ReceiverTemplate` (from smartcontractkit/cre-gcp-prediction-market-demo) for
+forwarder/author/name validation instead of hand-rolled checks.
+
+The full money flow was exercised on real Sepolia across three markets (Yes,
+No, Void) with two independent stakers, then both claimed:
+
+| staker | market 0 (Yes) | market 1 (No) | market 2 (Void) | total received |
+|---|---|---|---|---|
+| alice (staked YES: 1e6/1e6/1e6) | wins: 4e6 | loses: reverts `NothingToClaim` | refund: 1e6 | 5e6 |
+| bob (staked NO: 3e6/3e6/3e6) | loses: reverts `NothingToClaim` | wins: 4e6 | refund: 3e6 | 7e6 |
+
+Contract's MockUSDC balance after all four claims: **0** — fully drained, no
+dust. Numbers match the parimutuel math exactly.
 
 ## Toolchain
 
