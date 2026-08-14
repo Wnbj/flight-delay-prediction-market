@@ -107,9 +107,7 @@ export function Nav({
           {wallet.account ? (
             <AccountMenu account={wallet.account} onDisconnect={wallet.disconnect} />
           ) : (
-            <button className="btn btn-accent" onClick={() => void wallet.connect()}>
-              Connect wallet
-            </button>
+            <ConnectControl wallet={wallet} />
           )}
         </div>
       </div>
@@ -131,6 +129,99 @@ export function Nav({
 
       {wallet.error && <Banner tone="error">{wallet.error}</Banner>}
     </>
+  );
+}
+
+/**
+ * With several wallet extensions installed there is no safe guess about which
+ * one the user means — `window.ethereum` is whichever won the race, not their
+ * choice. So more than one discovered wallet gets a picker.
+ */
+function ConnectControl({ wallet }: { wallet: WalletState }) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onPointer = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && setOpen(false);
+    document.addEventListener("mousedown", onPointer);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onPointer);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  const many = wallet.wallets.length > 1;
+
+  return (
+    <div ref={ref} style={{ position: "relative" }}>
+      <button
+        className="btn btn-accent"
+        onClick={() => {
+          if (many) setOpen((v) => !v);
+          else void wallet.connect();
+        }}
+        aria-haspopup={many ? "menu" : undefined}
+        aria-expanded={many ? open : undefined}
+      >
+        Connect wallet
+      </button>
+
+      {open && many && (
+        <div
+          role="menu"
+          style={{
+            position: "absolute",
+            right: 0,
+            top: "calc(100% + 6px)",
+            minWidth: 208,
+            padding: "var(--space-2)",
+            borderRadius: "var(--radius-md)",
+            background: "var(--color-surface)",
+            boxShadow: "var(--shadow-md)",
+            display: "flex",
+            flexDirection: "column",
+            gap: 2,
+            zIndex: 30,
+          }}
+        >
+          <div className="muted-strong" style={{ fontSize: 11, padding: "4px 8px" }}>
+            Choose a wallet
+          </div>
+          {wallet.wallets.map((w) => (
+            <button
+              key={w.info.uuid}
+              role="menuitem"
+              onClick={() => {
+                setOpen(false);
+                void wallet.connect(w);
+              }}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 8,
+                width: "100%",
+                textAlign: "left",
+                fontSize: 13,
+                padding: "6px 8px",
+                borderRadius: "var(--radius-sm)",
+                background: "transparent",
+                border: "none",
+                color: "var(--color-text)",
+                cursor: "pointer",
+              }}
+            >
+              <img src={w.info.icon} alt="" width={18} height={18} style={{ borderRadius: 4 }} />
+              {w.info.name}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 

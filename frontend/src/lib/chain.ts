@@ -5,8 +5,8 @@ import {
   http,
   parseAbiItem,
   type Address,
-  type EIP1193Provider,
 } from "viem";
+import { getActiveProvider } from "./providers";
 import { chain, DEPLOY_BLOCK, MARKET_ADDRESS, RPC_URL, TOKEN_ADDRESS } from "./config";
 import { flightMarketAbi, mockUsdcAbi } from "./abi";
 import {
@@ -22,14 +22,14 @@ export const publicClient = createPublicClient({
   transport: http(RPC_URL),
 });
 
-export function getInjectedProvider(): EIP1193Provider | null {
-  const eth = (window as unknown as { ethereum?: EIP1193Provider }).ethereum;
-  return eth ?? null;
-}
-
+/**
+ * Signing must go to the wallet the user actually connected with — see
+ * lib/providers for why `window.ethereum` is not that wallet when several
+ * extensions are installed.
+ */
 export function walletClientFor(account: Address) {
-  const provider = getInjectedProvider();
-  if (!provider) throw new Error("No injected wallet found");
+  const provider = getActiveProvider();
+  if (!provider) throw new Error("No wallet connected");
   return createWalletClient({ account, chain, transport: custom(provider) });
 }
 
