@@ -11,6 +11,7 @@ export interface WalletState {
   hasProvider: boolean;
   wrongNetwork: boolean;
   connect: () => Promise<void>;
+  disconnect: () => Promise<void>;
   switchNetwork: () => Promise<void>;
 }
 
@@ -28,6 +29,12 @@ export function useWallet(): WalletState {
   const [error, setError] = useState<string | null>(null);
   /** Flips only when the user actively asks to connect. Gates all provider I/O. */
   const [attempted, setAttempted] = useState(false);
+  /**
+   * Set by an explicit disconnect. Without it, the wallet emitting
+   * `accountsChanged` (an account switch, say) would silently sign the user
+   * back in moments after they asked to leave.
+   */
+  const [dismissed, setDismissed] = useState(false);
 
   const provider = getInjectedProvider();
   const hasProvider = provider !== null;
@@ -50,6 +57,7 @@ export function useWallet(): WalletState {
    */
   const connect = useCallback(async () => {
     setAttempted(true);
+    setDismissed(false);
     if (!provider) {
       setError("No browser wallet detected. Install MetaMask to trade.");
       return;
@@ -83,7 +91,8 @@ export function useWallet(): WalletState {
     if (!provider || !attempted) return;
     const onAccounts = (...args: unknown[]) => {
       const accounts = args[0] as Address[];
-      setAccount(accounts.length > 0 ? accounts[0] : null);
+      // Respect an explicit disconnect; only a fresh connect() re-opts in.
+      setAccount(accounts.length > 0 && !dismissed ? accounts[0] : null);
       setConnecting(false);
     };
     const onChain = (...args: unknown[]) => {
@@ -95,7 +104,30 @@ export function useWallet(): WalletState {
       provider.removeListener("accountsChanged", onAccounts);
       provider.removeListener("chainChanged", onChain);
     };
-  }, [provider, attempted]);
+  }, [provider, attempted, dismissed]);
+
+  /**
+   * EIP-1193 has no dapp-side logout: the wallet owns the permission, so the
+   * honest scope of this is "forget the account here". We also ask MetaMask to
+   * revoke `eth_accounts` so the next connect prompts again rather than
+   * silently re-authorising — that method is recent, so failure is ignored and
+   * the local disconnect still stands.
+   */
+  const disconnect = useCallback(async () => {
+    setAccount(null);
+    setChainId(null);
+    setError(null);
+    setConnecting(false);
+    setDismissed(true);
+    try {
+      await provider?.request({
+        method: "wallet_revokePermissions",
+        params: [{ eth_accounts: {} }],
+      });
+    } catch {
+      /* older wallets have no such method; local disconnect is still in effect */
+    }
+  }, [provider]);
 
   /**
    * An account can arrive without passing through connect()'s success branch —
@@ -174,6 +206,7 @@ export function useWallet(): WalletState {
     hasProvider,
     wrongNetwork: account !== null && chainId !== null && chainId !== chain.id,
     connect,
+    disconnect,
     switchNetwork,
   };
 }

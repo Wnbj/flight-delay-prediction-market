@@ -1,4 +1,5 @@
-import { TOKEN_SYMBOL } from "../lib/config";
+import { useEffect, useRef, useState } from "react";
+import { addressUrl, TOKEN_SYMBOL } from "../lib/config";
 import { formatToken, initials, shortAddress } from "../lib/format";
 import type { WalletState } from "../hooks/useWallet";
 import type { View } from "../lib/view";
@@ -104,31 +105,7 @@ export function Nav({
           )}
 
           {wallet.account ? (
-            <>
-              <span
-                className="muted"
-                style={{ fontSize: 13 }}
-                title={wallet.account}
-              >
-                {shortAddress(wallet.account)}
-              </span>
-              <div
-                style={{
-                  width: 30,
-                  height: 30,
-                  borderRadius: "50%",
-                  background: "var(--color-accent-800)",
-                  color: "var(--color-accent-100)",
-                  display: "flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  fontSize: 12,
-                  fontWeight: 600,
-                }}
-              >
-                {initials(wallet.account)}
-              </div>
-            </>
+            <AccountMenu account={wallet.account} onDisconnect={wallet.disconnect} />
           ) : (
             <button className="btn btn-accent" onClick={() => void wallet.connect()}>
               {wallet.connecting ? "Connecting…" : "Connect wallet"}
@@ -156,6 +133,132 @@ export function Nav({
     </>
   );
 }
+
+function AccountMenu({
+  account,
+  onDisconnect,
+}: {
+  account: string;
+  onDisconnect: () => Promise<void>;
+}) {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const onPointer = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("mousedown", onPointer);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onPointer);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  return (
+    <div ref={ref} style={{ position: "relative" }}>
+      <button
+        onClick={() => setOpen((v) => !v)}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        title={account}
+        style={{
+          display: "flex",
+          alignItems: "center",
+          gap: 8,
+          cursor: "pointer",
+          background: "transparent",
+          border: "1px solid var(--color-divider)",
+          borderRadius: "var(--radius-md)",
+          padding: "3px 6px 3px 10px",
+          color: "var(--color-text)",
+          fontSize: 13,
+        }}
+      >
+        <span className="muted">{shortAddress(account)}</span>
+        <span
+          style={{
+            width: 26,
+            height: 26,
+            borderRadius: "50%",
+            background: "var(--color-accent-800)",
+            color: "var(--color-accent-100)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            fontSize: 11,
+            fontWeight: 600,
+          }}
+        >
+          {initials(account)}
+        </span>
+      </button>
+
+      {open && (
+        <div
+          role="menu"
+          style={{
+            position: "absolute",
+            right: 0,
+            top: "calc(100% + 6px)",
+            minWidth: 232,
+            padding: "var(--space-2)",
+            borderRadius: "var(--radius-md)",
+            background: "var(--color-surface)",
+            boxShadow: "var(--shadow-md)",
+            display: "flex",
+            flexDirection: "column",
+            gap: 2,
+            zIndex: 30,
+          }}
+        >
+          <div
+            className="muted-strong"
+            style={{ fontSize: 11, padding: "4px 8px", wordBreak: "break-all" }}
+          >
+            {account}
+          </div>
+          <a
+            href={addressUrl(account)}
+            target="_blank"
+            rel="noreferrer"
+            role="menuitem"
+            style={menuItemStyle}
+            onClick={() => setOpen(false)}
+          >
+            View on Etherscan ↗
+          </a>
+          <button
+            role="menuitem"
+            onClick={() => {
+              setOpen(false);
+              void onDisconnect();
+            }}
+            style={{ ...menuItemStyle, border: "none", width: "100%", textAlign: "left" }}
+          >
+            Disconnect
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+const menuItemStyle: React.CSSProperties = {
+  fontSize: 13,
+  padding: "6px 8px",
+  borderRadius: "var(--radius-sm)",
+  background: "transparent",
+  color: "var(--color-text)",
+  textDecoration: "none",
+  cursor: "pointer",
+  display: "block",
+};
 
 function Banner({
   children,
