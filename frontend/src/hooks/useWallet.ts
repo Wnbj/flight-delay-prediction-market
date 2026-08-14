@@ -97,32 +97,49 @@ export function useWallet(): WalletState {
   }, [provider, attempted]);
 
   /**
-   * If the user approves in MetaMask after our request was orphaned, nothing
-   * resolves above — so re-read accounts when the tab regains focus. Gated on
-   * `attempted` so it never runs for someone who has not asked to connect.
+   * The wallet popup steals focus; closing it hands focus back. That return is
+   * the only signal we get when a request is dismissed rather than answered,
+   * since the promise itself never settles. On focus we re-read accounts:
+   * present means it was approved out-of-band, absent means it was dismissed
+   * and the "Connecting…" state must be cleared either way.
    */
   useEffect(() => {
     if (!provider || !attempted) return;
-    const recheck = async () => {
+
+    const onReturn = async () => {
+      if (document.visibilityState === "hidden") return;
+      // Let an approval that just landed commit before calling it a dismissal.
+      await new Promise((r) => setTimeout(r, 350));
       try {
         const accounts = (await provider.request({ method: "eth_accounts" })) as Address[];
         if (accounts.length > 0) {
           setAccount(accounts[0]);
-          setConnecting(false);
           setError(null);
           await readChain();
         }
       } catch {
         /* ignore */
       }
+      setConnecting(false);
     };
-    window.addEventListener("focus", recheck);
-    document.addEventListener("visibilitychange", recheck);
+
+    window.addEventListener("focus", onReturn);
+    document.addEventListener("visibilitychange", onReturn);
     return () => {
-      window.removeEventListener("focus", recheck);
-      document.removeEventListener("visibilitychange", recheck);
+      window.removeEventListener("focus", onReturn);
+      document.removeEventListener("visibilitychange", onReturn);
     };
   }, [provider, attempted, readChain]);
+
+  /**
+   * Backstop for setups where the popup never blurs the page, so no focus event
+   * arrives. Without this the label could still stick indefinitely.
+   */
+  useEffect(() => {
+    if (!connecting) return;
+    const t = setTimeout(() => setConnecting(false), 45_000);
+    return () => clearTimeout(t);
+  }, [connecting]);
 
   const switchNetwork = useCallback(async () => {
     if (!provider) return;
