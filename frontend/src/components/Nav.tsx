@@ -130,11 +130,7 @@ export function Nav({
               </div>
             </>
           ) : (
-            <button
-              className="btn btn-accent"
-              onClick={() => void wallet.connect()}
-              disabled={wallet.connecting}
-            >
+            <button className="btn btn-accent" onClick={() => void wallet.connect()}>
               {wallet.connecting ? "Connecting…" : "Connect wallet"}
             </button>
           )}

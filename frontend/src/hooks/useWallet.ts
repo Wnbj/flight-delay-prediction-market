@@ -68,6 +68,12 @@ export function useWallet(): WalletState {
     };
   }, [provider]);
 
+  /**
+   * Closing the MetaMask popup without approving or rejecting leaves the
+   * request permanently unsettled — the promise never resolves, so no `finally`
+   * can run. `connecting` is therefore only ever a label hint; it must never
+   * gate the button, or dismissing the popup would lock the user out for good.
+   */
   const connect = useCallback(async () => {
     if (!provider) {
       setError("No browser wallet detected. Install MetaMask to trade.");
@@ -81,11 +87,46 @@ export function useWallet(): WalletState {
       })) as Address[];
       setAccount(accounts[0] ?? null);
       await readChain();
+      setConnecting(false);
     } catch (e) {
-      setError(e instanceof Error ? e.message : "Failed to connect");
-    } finally {
+      const code = (e as { code?: number }).code;
+      if (code === -32002) {
+        // MetaMask still holds the earlier request; a new one cannot open.
+        setError("MetaMask already has a connection request open — open the extension and approve it.");
+      } else if (code === 4001) {
+        setError("Connection rejected in wallet.");
+      } else {
+        setError(e instanceof Error ? e.message : "Failed to connect");
+      }
       setConnecting(false);
     }
+  }, [provider, readChain]);
+
+  /**
+   * If the user approves in MetaMask after our request was orphaned, nothing
+   * resolves here — so re-read accounts whenever the tab regains focus.
+   */
+  useEffect(() => {
+    if (!provider) return;
+    const recheck = async () => {
+      try {
+        const accounts = (await provider.request({ method: "eth_accounts" })) as Address[];
+        if (accounts.length > 0) {
+          setAccount(accounts[0]);
+          setConnecting(false);
+          setError(null);
+          await readChain();
+        }
+      } catch {
+        /* ignore */
+      }
+    };
+    window.addEventListener("focus", recheck);
+    document.addEventListener("visibilitychange", recheck);
+    return () => {
+      window.removeEventListener("focus", recheck);
+      document.removeEventListener("visibilitychange", recheck);
+    };
   }, [provider, readChain]);
 
   const switchNetwork = useCallback(async () => {
