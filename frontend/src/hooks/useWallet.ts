@@ -84,6 +84,7 @@ export function useWallet(): WalletState {
     const onAccounts = (...args: unknown[]) => {
       const accounts = args[0] as Address[];
       setAccount(accounts.length > 0 ? accounts[0] : null);
+      setConnecting(false);
     };
     const onChain = (...args: unknown[]) => {
       setChainId(Number.parseInt(args[0] as string, 16));
@@ -95,6 +96,25 @@ export function useWallet(): WalletState {
       provider.removeListener("chainChanged", onChain);
     };
   }, [provider, attempted]);
+
+  /**
+   * An account can arrive without passing through connect()'s success branch —
+   * via `accountsChanged`, or from a queued request the user approves later.
+   *
+   * Two things have to be settled here rather than there: a connection error
+   * left over from an earlier attempt would otherwise sit on screen next to a
+   * working connection, and the chain id would never be read, so the
+   * wrong-network warning could stay silent on the wrong network.
+   *
+   * Reading the chain is safe at this point: an account existing means the
+   * permission request has been answered, so there is no queued request left
+   * for MetaMask to re-surface.
+   */
+  useEffect(() => {
+    if (!account) return;
+    setError(null);
+    void readChain();
+  }, [account, readChain]);
 
   /**
    * The wallet popup steals focus; closing it hands focus back, which is our
