@@ -19,7 +19,7 @@ export function Landing({
   stakeEvents: StakeEvent[];
   now: number;
   onNavigate: (v: View) => void;
-  onOpenMarket: (id: number) => void;
+  onOpenMarket: (key: string) => void;
   onPickCategory: (id: CategoryId) => void;
 }) {
   const landingRef = useRef<HTMLDivElement>(null);
@@ -336,7 +336,7 @@ export function Landing({
         ) : (
           <div className="grid-3" style={{ maxWidth: 1200 }}>
             {trending.map((m, i) => (
-              <Reveal key={m.id} delay={i * 60}>
+              <Reveal key={m.key} delay={i * 60}>
                 <MarketCard market={m} events={stakeEvents} now={now} onOpen={onOpenMarket} />
               </Reveal>
             ))}

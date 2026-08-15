@@ -24,7 +24,8 @@ export interface ChainData {
   settledEvents: SettledEvent[];
   positions: Position[];
   balance: bigint;
-  allowance: bigint;
+  /** Keyed by spender (market contract) — ERC-20 allowance is per spender. */
+  allowances: Map<string, bigint>;
   loading: boolean;
   error: string | null;
   /** Markets loaded but event history did not — charts and leaderboard are thin. */
@@ -34,11 +35,11 @@ export interface ChainData {
 
 function derivePositions(
   markets: Market[],
-  stakes: { yes: bigint; no: bigint; claimed: boolean }[],
+  stakes: Map<string, { yes: bigint; no: bigint; claimed: boolean }>,
 ): Position[] {
   const out: Position[] = [];
-  markets.forEach((m, i) => {
-    const s = stakes[i];
+  markets.forEach((m) => {
+    const s = stakes.get(m.key);
     if (!s || (s.yes === 0n && s.no === 0n)) return;
 
     const entitlement = claimablePayout(m, s.yes, s.no);
@@ -74,7 +75,7 @@ function derivePositions(
 export function deriveTraders(markets: Market[], stakes: StakeEvent[]): TraderStats[] {
   const byUser = new Map<
     Address,
-    { staked: bigint; perMarket: Map<number, { yes: bigint; no: bigint }> }
+    { staked: bigint; perMarket: Map<string, { yes: bigint; no: bigint }> }
   >();
 
   for (const e of stakes) {
@@ -84,16 +85,18 @@ export function deriveTraders(markets: Market[], stakes: StakeEvent[]): TraderSt
       byUser.set(e.user, rec);
     }
     rec.staked += e.amount;
-    let pm = rec.perMarket.get(e.marketId);
+    let pm = rec.perMarket.get(e.marketKey);
     if (!pm) {
       pm = { yes: 0n, no: 0n };
-      rec.perMarket.set(e.marketId, pm);
+      rec.perMarket.set(e.marketKey, pm);
     }
     if (e.isYes) pm.yes += e.amount;
     else pm.no += e.amount;
   }
 
-  const marketById = new Map(markets.map((m) => [m.id, m]));
+  // Keyed by composite key, not id: flight 0 and crypto 0 are different
+  // markets and must not collapse into one another here.
+  const marketByKey = new Map(markets.map((m) => [m.key, m]));
   const out: TraderStats[] = [];
 
   for (const [address, rec] of byUser) {
@@ -101,8 +104,8 @@ export function deriveTraders(markets: Market[], stakes: StakeEvent[]): TraderSt
     let wins = 0;
     let settledMarkets = 0;
 
-    for (const [marketId, pm] of rec.perMarket) {
-      const m = marketById.get(marketId);
+    for (const [key, pm] of rec.perMarket) {
+      const m = marketByKey.get(key);
       if (!m) continue;
       const isResolved =
         m.status === MarketStatus.Settled || m.status === MarketStatus.Void;
@@ -128,7 +131,8 @@ export function useChainData(account: Address | null): ChainData {
   const [settledEvents, setSettledEvents] = useState<SettledEvent[]>([]);
   const [positions, setPositions] = useState<Position[]>([]);
   const [balance, setBalance] = useState<bigint>(0n);
-  const [allowance, setAllowance] = useState<bigint>(0n);
+  /** Keyed by spender (market contract) — ERC-20 allowance is per spender. */
+  const [allowances, setAllowances] = useState<Map<string, bigint>>(new Map());
   const [loading, setLoading] = useState(true);
   const [historyDegraded, setHistoryDegraded] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -154,18 +158,20 @@ export function useChainData(account: Address | null): ChainData {
       setHistoryDegraded(se === null || sv === null);
 
       if (account) {
-        const [stakes, bal, allow] = await Promise.all([
-          readWalletStakes(account, ms.length),
+        // Allowance is per spender, so each market contract needs its own.
+        const spenders = [...new Set(ms.map((m) => m.contract))];
+        const [stakes, bal, allows] = await Promise.all([
+          readWalletStakes(account, ms),
           readTokenBalance(account),
-          readAllowance(account),
+          Promise.all(spenders.map((s) => readAllowance(account, s))),
         ]);
         setPositions(derivePositions(ms, stakes));
         setBalance(bal);
-        setAllowance(allow);
+        setAllowances(new Map(spenders.map((s, i) => [s, allows[i]!])));
       } else {
         setPositions([]);
         setBalance(0n);
-        setAllowance(0n);
+        setAllowances(new Map());
       }
     } catch (e) {
       setError(e instanceof Error ? e.message : "Failed to load chain data");
@@ -185,7 +191,7 @@ export function useChainData(account: Address | null): ChainData {
     settledEvents,
     positions,
     balance,
-    allowance,
+    allowances,
     loading,
     error,
     historyDegraded,

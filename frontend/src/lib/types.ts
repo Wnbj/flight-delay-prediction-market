@@ -19,27 +19,58 @@ export type CategoryId = "flights" | "sports" | "crypto" | "pop" | "current";
 
 export type Side = "yes" | "no";
 
-/** One market, as read from the chain and enriched for display. */
-export interface Market {
+/**
+ * Fields every market has, whatever it is about — mirrors
+ * ParimutuelMarket.Core on chain.
+ */
+interface MarketBase {
+  /** Index within its own contract. NOT unique across contracts. */
   id: number;
-  categoryId: CategoryId;
+  /**
+   * Unique across every contract, as `"<category>:<id>"`. Market ids restart
+   * at 0 in each contract, so anything identifying a market across the app —
+   * React keys, event lookups, position matching — must use this, never `id`.
+   */
+  key: string;
+  contract: `0x${string}`;
   question: string;
-  /** Flight-specific payload; other categories will carry their own. */
-  flightIata: string;
-  departureDate: number;
-  thresholdMinutes: number;
   closeTime: number;
   settleAfter: number;
   status: MarketStatus;
   outcome: Outcome;
   evidenceHash: `0x${string}`;
-  observedDelay: number;
   yesPool: bigint;
   noPool: bigint;
 }
 
+export interface FlightMarket extends MarketBase {
+  categoryId: "flights";
+  flightIata: string;
+  departureDate: number;
+  thresholdMinutes: number;
+  /** Minutes late, as agreed by the oracle. Negative means early. */
+  observedDelay: number;
+}
+
+export interface CryptoMarket extends MarketBase {
+  categoryId: "crypto";
+  asset: "BTC" | "ETH";
+  /** Strike and observed price both carry 8 decimals, as on chain. */
+  strikePrice: bigint;
+  expiryTime: number;
+  observedPrice: bigint;
+}
+
+/**
+ * A union rather than one wide interface with optional fields: it makes
+ * reading a flight's `thresholdMinutes` off a crypto market a compile error
+ * instead of a silent `undefined` rendered to the user.
+ */
+export type Market = FlightMarket | CryptoMarket;
+
 export interface StakeEvent {
-  marketId: number;
+  /** Composite market key — see MarketBase.key. */
+  marketKey: string;
   user: `0x${string}`;
   isYes: boolean;
   amount: bigint;
@@ -48,9 +79,11 @@ export interface StakeEvent {
 }
 
 export interface SettledEvent {
-  marketId: number;
+  /** Composite market key — see MarketBase.key. */
+  marketKey: string;
   outcome: Outcome;
-  observedDelay: number;
+  /** Minutes late for flights, price at 8 decimals for crypto. */
+  observedValue: bigint;
   evidenceHash: `0x${string}`;
   txHash: `0x${string}`;
 }

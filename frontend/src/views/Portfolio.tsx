@@ -3,7 +3,7 @@ import type { Address } from "viem";
 import { category } from "../lib/categories";
 import { formatSigned, formatToken } from "../lib/format";
 import { sendClaim, waitForTx } from "../lib/chain";
-import { MarketStatus, type Position } from "../lib/types";
+import { MarketStatus, type Market, type Position } from "../lib/types";
 import type { WalletState } from "../hooks/useWallet";
 
 type Filter = "all" | "open" | "resolved" | "claimable";
@@ -23,11 +23,11 @@ export function Portfolio({
 }: {
   positions: Position[];
   wallet: WalletState;
-  onOpenMarket: (id: number) => void;
+  onOpenMarket: (key: string) => void;
   onRefresh: () => Promise<void>;
 }) {
   const [filter, setFilter] = useState<Filter>("all");
-  const [claiming, setClaiming] = useState<number | null>(null);
+  const [claiming, setClaiming] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   const totals = useMemo(() => {
@@ -66,12 +66,12 @@ export function Portfolio({
     );
   }, [positions, filter]);
 
-  const doClaim = async (marketId: number) => {
+  const doClaim = async (market: Market) => {
     if (!wallet.account) return;
-    setClaiming(marketId);
+    setClaiming(market.key);
     setError(null);
     try {
-      const hash = await sendClaim(wallet.account as Address, marketId);
+      const hash = await sendClaim(wallet.account as Address, market);
       await waitForTx(hash);
       await onRefresh();
     } catch (e) {
@@ -182,7 +182,7 @@ export function Portfolio({
                   p.yes > 0n && p.no > 0n ? "Both" : p.yes > 0n ? "Yes" : "No";
 
                 return (
-                  <tr key={p.market.id}>
+                  <tr key={p.market.key}>
                     <td>
                       <span
                         className="tag"
@@ -194,7 +194,7 @@ export function Portfolio({
                         href="#"
                         onClick={(e) => {
                           e.preventDefault();
-                          onOpenMarket(p.market.id);
+                          onOpenMarket(p.market.key);
                         }}
                         style={{ textDecoration: "none" }}
                       >
@@ -227,9 +227,9 @@ export function Portfolio({
                           className="btn btn-accent"
                           style={{ padding: "4px 10px", fontSize: 13 }}
                           disabled={claiming !== null}
-                          onClick={() => void doClaim(p.market.id)}
+                          onClick={() => void doClaim(p.market)}
                         >
-                          {claiming === p.market.id ? "Claiming…" : "Claim"}
+                          {claiming === p.market.key ? "Claiming…" : "Claim"}
                         </button>
                       )}
                     </td>

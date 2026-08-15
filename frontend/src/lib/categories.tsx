@@ -4,13 +4,15 @@ import type { CategoryId } from "./types";
 /**
  * Category registry — the extension point for new market types.
  *
- * Today every on-chain market comes from FlightMarket.sol, so `flights` is the
- * only `live` category. The rest are declared but disabled: they render in the
- * UI as "coming soon" rather than being hidden, so the shape of the product is
- * visible without inventing markets that do not exist.
+ * `flights` and `crypto` are live, each backed by its own contract. The rest
+ * are declared but disabled: they render in the UI as "coming soon" rather
+ * than being hidden, so the shape of the product is visible without inventing
+ * markets that do not exist.
  *
- * To add a category: give it a `live: true` entry here plus a contract address,
- * and teach `readMarkets` how to load it. Nothing else in the UI needs to know.
+ * To add a category: give it a `live: true` entry here, deploy a contract
+ * inheriting ParimutuelMarket, and teach `readMarkets` how to load it. Market
+ * cards, filters, portfolio and leaderboard all key off `categoryId` and need
+ * no changes.
  */
 
 const TAG: Record<string, CSSProperties> = {
@@ -111,8 +113,8 @@ export const CATEGORIES: CategoryDef[] = [
     id: "crypto",
     name: "Crypto",
     tagStyle: TAG.accent2,
-    live: false,
-    blurb: "Price and protocol milestones.",
+    live: true,
+    blurb: "BTC and ETH price levels, settled on median exchange data.",
     icon: cryptoIcon,
   },
   {

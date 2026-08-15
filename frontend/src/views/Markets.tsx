@@ -25,7 +25,7 @@ export function Markets({
   now: number;
   categoryFilter: CategoryId | "all";
   onCategoryFilter: (c: CategoryId | "all") => void;
-  onOpenMarket: (id: number) => void;
+  onOpenMarket: (key: string) => void;
 }) {
   const [sort, setSort] = useState<SortMode>("backed");
 
@@ -114,7 +114,7 @@ export function Markets({
         <div className="grid-3" style={{ maxWidth: 1300 }}>
           {filtered.map((m) => (
             <MarketCard
-              key={m.id}
+              key={m.key}
               market={m}
               events={stakeEvents}
               now={now}

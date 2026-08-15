@@ -22,7 +22,7 @@ export function Sparkline({
 }) {
   const points = useMemo(() => {
     const mine = events
-      .filter((e) => e.marketId === market.id)
+      .filter((e) => e.marketKey === market.key)
       .sort((a, b) => Number(a.blockNumber - b.blockNumber));
 
     const series: number[] = [];

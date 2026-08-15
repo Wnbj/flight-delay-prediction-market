@@ -7,6 +7,7 @@ import {
   formatRelative,
   formatTimestamp,
   formatToken,
+  formatUsd,
   shortAddress,
 } from "../lib/format";
 import {
@@ -39,7 +40,7 @@ export function Detail({
   positions,
   wallet,
   balance,
-  allowance,
+  allowances,
   now,
   onBack,
   onOpenMarket,
@@ -52,10 +53,10 @@ export function Detail({
   positions: Position[];
   wallet: WalletState;
   balance: bigint;
-  allowance: bigint;
+  allowances: Map<string, bigint>;
   now: number;
   onBack: () => void;
-  onOpenMarket: (id: number) => void;
+  onOpenMarket: (key: string) => void;
   onRefresh: () => Promise<void>;
 }) {
   const [tab, setTab] = useState<Tab>("overview");
@@ -65,9 +66,9 @@ export function Detail({
   const marketStakes = useMemo(
     () =>
       stakeEvents
-        .filter((e) => e.marketId === market.id)
+        .filter((e) => e.marketKey === market.key)
         .sort((a, b) => Number(b.blockNumber - a.blockNumber)),
-    [stakeEvents, market.id],
+    [stakeEvents, market.key],
   );
 
   const traders = useMemo(
@@ -75,9 +76,11 @@ export function Detail({
     [marketStakes],
   );
 
-  const settlement = settledEvents.find((e) => e.marketId === market.id);
-  const position = positions.find((p) => p.market.id === market.id);
-  const related = markets.filter((m) => m.categoryId === market.categoryId && m.id !== market.id).slice(0, 3);
+  const settlement = settledEvents.find((e) => e.marketKey === market.key);
+  const position = positions.find((p) => p.market.key === market.key);
+  const related = markets
+    .filter((m) => m.categoryId === market.categoryId && m.key !== market.key)
+    .slice(0, 3);
 
   return (
     <div className="page" style={{ paddingTop: 40, maxWidth: 1300 }}>
@@ -164,15 +167,31 @@ export function Detail({
               <div className="eyebrow">Settled by Chainlink CRE</div>
               <div style={{ display: "flex", gap: "var(--space-8)", flexWrap: "wrap" }}>
                 <Stat label="Outcome" value={outcomeLabel(settlement.outcome)} />
-                <Stat
-                  label="Observed delay"
-                  value={
-                    settlement.outcome === Outcome.Void
-                      ? "—"
-                      : `${settlement.observedDelay} min`
-                  }
-                />
-                <Stat label="Threshold" value={`${market.thresholdMinutes} min`} />
+                {market.categoryId === "flights" ? (
+                  <>
+                    <Stat
+                      label="Observed delay"
+                      value={
+                        settlement.outcome === Outcome.Void
+                          ? "—"
+                          : `${settlement.observedValue} min`
+                      }
+                    />
+                    <Stat label="Threshold" value={`${market.thresholdMinutes} min`} />
+                  </>
+                ) : (
+                  <>
+                    <Stat
+                      label="Observed price"
+                      value={
+                        settlement.outcome === Outcome.Void
+                          ? "—"
+                          : formatUsd(settlement.observedValue)
+                      }
+                    />
+                    <Stat label="Strike" value={formatUsd(market.strikePrice)} />
+                  </>
+                )}
               </div>
               <a
                 href={txUrl(settlement.txHash)}
@@ -222,10 +241,21 @@ export function Detail({
           {tab === "overview" && (
             <div>
               <p style={{ maxWidth: 600, opacity: 0.85, margin: 0 }}>
-                Resolves <strong>Yes</strong> if flight {market.flightIata} on{" "}
-                {formatDepartureDate(market.departureDate)} arrives at least{" "}
-                {market.thresholdMinutes} minutes late, or is cancelled or diverted. Resolves{" "}
-                <strong>No</strong> if it lands less than {market.thresholdMinutes} minutes late.
+                {market.categoryId === "flights" ? (
+                  <>
+                    Resolves <strong>Yes</strong> if flight {market.flightIata} on{" "}
+                    {formatDepartureDate(market.departureDate)} arrives at least{" "}
+                    {market.thresholdMinutes} minutes late, or is cancelled or diverted. Resolves{" "}
+                    <strong>No</strong> if it lands less than {market.thresholdMinutes} minutes
+                    late.
+                  </>
+                ) : (
+                  <>
+                    Resolves <strong>Yes</strong> if {market.asset} is at or above{" "}
+                    {formatUsd(market.strikePrice)} at {formatTimestamp(market.expiryTime)}.
+                    Resolves <strong>No</strong> if it is below.
+                  </>
+                )}
               </p>
               <div
                 style={{
@@ -237,6 +267,9 @@ export function Detail({
               >
                 <Stat label="Pool" value={formatToken(totalPool(market))} />
                 <Stat label="Backers" value={String(traders)} />
+                {market.categoryId === "crypto" && (
+                  <Stat label="Strike" value={formatUsd(market.strikePrice)} />
+                )}
                 <Stat label="Closes" value={formatTimestamp(market.closeTime)} />
                 <Stat label="Settleable from" value={formatTimestamp(market.settleAfter)} />
               </div>
@@ -297,25 +330,48 @@ export function Detail({
                 Resolution rules are encoded on chain, so the oracle has no discretion:
               </p>
               <ul style={{ paddingLeft: 18, lineHeight: 1.7 }}>
+                {market.categoryId === "flights" ? (
+                  <>
+                    <li>
+                      <strong>Yes</strong> — arrival delay ≥ {market.thresholdMinutes} minutes, or
+                      the flight is cancelled or diverted.
+                    </li>
+                    <li>
+                      <strong>No</strong> — arrival delay &lt; {market.thresholdMinutes} minutes.
+                    </li>
+                  </>
+                ) : (
+                  <>
+                    <li>
+                      <strong>Yes</strong> — {market.asset} at or above{" "}
+                      {formatUsd(market.strikePrice)} at expiry.
+                    </li>
+                    <li>
+                      <strong>No</strong> — below {formatUsd(market.strikePrice)} at expiry.
+                    </li>
+                  </>
+                )}
                 <li>
-                  <strong>Yes</strong> — arrival delay ≥ {market.thresholdMinutes} minutes, or the
-                  flight is cancelled or diverted.
-                </li>
-                <li>
-                  <strong>No</strong> — arrival delay &lt; {market.thresholdMinutes} minutes.
-                </li>
-                <li>
-                  <strong>Void</strong> — the data is unavailable, the oracle nodes disagree, or
-                  only one side of the book is backed. Everyone is refunded their own stake.
+                  <strong>Void</strong> — the data is unavailable, the sources disagree, or only
+                  one side of the book is backed. Everyone is refunded their own stake.
                 </li>
               </ul>
               <p>
                 Anyone may call <code>requestSettlement()</code> once the settle-after time passes.
                 That emits the log a Chainlink CRE workflow listens for; the network fetches the
-                flight result, reaches consensus, and writes a signed report back to{" "}
+                result, reaches consensus, and writes a signed report back to{" "}
                 <code>onReport()</code>. Payouts are parimutuel: the winning side splits the entire
                 pot in proportion to stake.
               </p>
+              {market.categoryId === "crypto" && (
+                <p>
+                  The settlement price is the close of the one-minute candle containing expiry,
+                  taken as the median across Coinbase, Kraken and Bitstamp. A closed candle is
+                  used rather than a live quote so every oracle node reads the same number no
+                  matter when it runs. If the venues disagree about which side of the strike the
+                  price landed, the market voids rather than picking a winner.
+                </p>
+              )}
             </div>
           )}
         </div>
@@ -324,7 +380,7 @@ export function Detail({
           market={market}
           wallet={wallet}
           balance={balance}
-          allowance={allowance}
+          allowance={allowances.get(market.contract) ?? 0n}
           position={position}
           now={now}
           onDone={onRefresh}

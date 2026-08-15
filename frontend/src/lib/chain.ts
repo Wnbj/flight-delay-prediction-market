@@ -7,8 +7,15 @@ import {
   type Address,
 } from "viem";
 import { getActiveProvider } from "./providers";
-import { chain, DEPLOY_BLOCK, MARKET_ADDRESS, RPC_URL, TOKEN_ADDRESS } from "./config";
-import { flightMarketAbi, mockUsdcAbi } from "./abi";
+import {
+  chain,
+  CRYPTO_MARKET_ADDRESS,
+  DEPLOY_BLOCK,
+  MARKET_ADDRESS,
+  RPC_URL,
+  TOKEN_ADDRESS,
+} from "./config";
+import { cryptoMarketAbi, flightMarketAbi, mockUsdcAbi } from "./abi";
 import {
   MarketStatus,
   Outcome,
@@ -34,19 +41,24 @@ export function walletClientFor(account: Address) {
 }
 
 const marketContract = { address: MARKET_ADDRESS, abi: flightMarketAbi } as const;
+const cryptoContract = { address: CRYPTO_MARKET_ADDRESS, abi: cryptoMarketAbi } as const;
 const tokenContract = { address: TOKEN_ADDRESS, abi: mockUsdcAbi } as const;
 
-/**
- * Every market currently on chain. All of them are flight markets — see
- * lib/categories for how additional categories would slot in.
- */
-export async function readMarkets(): Promise<Market[]> {
-  const count = (await publicClient.readContract({
-    ...marketContract,
-    functionName: "marketCount",
-  })) as bigint;
+/** Market ids restart at 0 per contract, so identity has to carry the category. */
+export const marketKey = (categoryId: string, id: number) => `${categoryId}:${id}`;
 
-  const n = Number(count);
+/** Which contract a market's stake/claim calls should go to. */
+export function contractFor(market: Market) {
+  return market.categoryId === "crypto" ? cryptoContract : marketContract;
+}
+
+async function readFlightMarkets(): Promise<Market[]> {
+  const n = Number(
+    (await publicClient.readContract({
+      ...marketContract,
+      functionName: "marketCount",
+    })) as bigint,
+  );
   if (n === 0) return [];
 
   const results = await publicClient.multicall({
@@ -65,6 +77,8 @@ export async function readMarkets(): Promise<Market[]> {
     ];
     return {
       id: i,
+      key: marketKey("flights", i),
+      contract: MARKET_ADDRESS,
       categoryId: "flights",
       question: t[0],
       flightIata: t[1],
@@ -82,39 +96,92 @@ export async function readMarkets(): Promise<Market[]> {
   });
 }
 
+const ASSET_SYMBOLS = ["BTC", "ETH"] as const;
+
+async function readCryptoMarkets(): Promise<Market[]> {
+  const n = Number(
+    (await publicClient.readContract({
+      ...cryptoContract,
+      functionName: "marketCount",
+    })) as bigint,
+  );
+  if (n === 0) return [];
+
+  // Core and terms are separate mappings on chain — the shared parimutuel base
+  // holds one, the crypto contract the other — so both are needed per market.
+  const results = await publicClient.multicall({
+    contracts: Array.from({ length: n }, (_, i) => i).flatMap((i) => [
+      { ...cryptoContract, functionName: "core" as const, args: [BigInt(i)] as const },
+      { ...cryptoContract, functionName: "terms" as const, args: [BigInt(i)] as const },
+    ]),
+    allowFailure: false,
+  });
+
+  return Array.from({ length: n }, (_, i) => {
+    const c = results[i * 2] as unknown as [
+      string, bigint, bigint, number, number, `0x${string}`, bigint, bigint, bigint,
+    ];
+    const t = results[i * 2 + 1] as unknown as [number, bigint, bigint];
+    return {
+      id: i,
+      key: marketKey("crypto", i),
+      contract: CRYPTO_MARKET_ADDRESS,
+      categoryId: "crypto",
+      question: c[0],
+      closeTime: Number(c[1]),
+      settleAfter: Number(c[2]),
+      status: Number(c[3]) as MarketStatus,
+      outcome: Number(c[4]) as Outcome,
+      evidenceHash: c[5],
+      observedPrice: c[6],
+      yesPool: c[7],
+      noPool: c[8],
+      asset: ASSET_SYMBOLS[Number(t[0])] ?? "BTC",
+      strikePrice: t[1],
+      expiryTime: Number(t[2]),
+    } satisfies Market;
+  });
+}
+
+/** Every market across every deployed market contract. */
+export async function readMarkets(): Promise<Market[]> {
+  const [flights, crypto] = await Promise.all([readFlightMarkets(), readCryptoMarkets()]);
+  return [...flights, ...crypto];
+}
+
 export interface WalletStake {
   yes: bigint;
   no: bigint;
   claimed: boolean;
 }
 
-/** One wallet's stakes across every market. */
+/** One wallet's stakes, keyed by composite market key across both contracts. */
 export async function readWalletStakes(
   user: Address,
-  marketCount: number,
-): Promise<WalletStake[]> {
-  if (marketCount === 0) return [];
+  markets: Market[],
+): Promise<Map<string, WalletStake>> {
+  const out = new Map<string, WalletStake>();
+  if (markets.length === 0) return out;
 
-  const calls = [];
-  for (let i = 0; i < marketCount; i++) {
-    const id = BigInt(i);
-    calls.push(
-      { ...marketContract, functionName: "yesStake" as const, args: [id, user] as const },
-      { ...marketContract, functionName: "noStake" as const, args: [id, user] as const },
-      { ...marketContract, functionName: "claimed" as const, args: [id, user] as const },
-    );
-  }
+  const calls = markets.flatMap((m) => {
+    const c = contractFor(m);
+    const id = BigInt(m.id);
+    return [
+      { ...c, functionName: "yesStake" as const, args: [id, user] as const },
+      { ...c, functionName: "noStake" as const, args: [id, user] as const },
+      { ...c, functionName: "claimed" as const, args: [id, user] as const },
+    ];
+  });
 
   const res = await publicClient.multicall({ contracts: calls, allowFailure: false });
 
-  const out: WalletStake[] = [];
-  for (let i = 0; i < marketCount; i++) {
-    out.push({
+  markets.forEach((m, i) => {
+    out.set(m.key, {
       yes: res[i * 3] as bigint,
       no: res[i * 3 + 1] as bigint,
       claimed: res[i * 3 + 2] as boolean,
     });
-  }
+  });
   return out;
 }
 
@@ -126,19 +193,28 @@ export async function readTokenBalance(user: Address): Promise<bigint> {
   })) as bigint;
 }
 
-export async function readAllowance(user: Address): Promise<bigint> {
+/**
+ * ERC-20 allowance is granted per spender, so the two market contracts each
+ * need their own. Staking on crypto after approving only flights would revert.
+ */
+export async function readAllowance(user: Address, spender: Address): Promise<bigint> {
   return (await publicClient.readContract({
     ...tokenContract,
     functionName: "allowance",
-    args: [user, MARKET_ADDRESS],
+    args: [user, spender],
   })) as bigint;
 }
 
 const STAKED_EVENT = parseAbiItem(
   "event Staked(uint256 indexed marketId, address indexed user, bool isYes, uint256 amount)",
 );
-const SETTLED_EVENT = parseAbiItem(
+// Both contracts emit Staked identically. Settled differs: the flight contract
+// predates the shared base and still declares int32, the base uses int256.
+const FLIGHT_SETTLED_EVENT = parseAbiItem(
   "event Settled(uint256 indexed marketId, uint8 outcome, int32 observedDelay, bytes32 evidenceHash)",
+);
+const CRYPTO_SETTLED_EVENT = parseAbiItem(
+  "event Settled(uint256 indexed marketId, uint8 outcome, int256 observedValue, bytes32 evidenceHash)",
 );
 
 /**
@@ -166,52 +242,73 @@ async function logsInChunks<T>(
 }
 
 export async function readStakeEvents(): Promise<StakeEvent[]> {
-  const logs = await logsInChunks((fromBlock, toBlock) =>
-    publicClient.getLogs({
-      address: MARKET_ADDRESS,
-      event: STAKED_EVENT,
-      fromBlock,
-      toBlock,
-    }),
-  );
+  const read = (address: `0x${string}`, categoryId: string) =>
+    logsInChunks((fromBlock, toBlock) =>
+      publicClient.getLogs({ address, event: STAKED_EVENT, fromBlock, toBlock }),
+    ).then((logs) =>
+      logs.map((l) => ({
+        marketKey: marketKey(categoryId, Number(l.args.marketId!)),
+        user: l.args.user!,
+        isYes: l.args.isYes!,
+        amount: l.args.amount!,
+        blockNumber: l.blockNumber!,
+        txHash: l.transactionHash!,
+      })),
+    );
 
-  return logs.map((l) => ({
-    marketId: Number(l.args.marketId!),
-    user: l.args.user!,
-    isYes: l.args.isYes!,
-    amount: l.args.amount!,
-    blockNumber: l.blockNumber!,
-    txHash: l.transactionHash!,
-  }));
+  const [flights, crypto] = await Promise.all([
+    read(MARKET_ADDRESS, "flights"),
+    read(CRYPTO_MARKET_ADDRESS, "crypto"),
+  ]);
+  return [...flights, ...crypto];
 }
 
 export async function readSettledEvents(): Promise<SettledEvent[]> {
-  const logs = await logsInChunks((fromBlock, toBlock) =>
-    publicClient.getLogs({
-      address: MARKET_ADDRESS,
-      event: SETTLED_EVENT,
-      fromBlock,
-      toBlock,
-    }),
-  );
+  const [flightLogs, cryptoLogs] = await Promise.all([
+    logsInChunks((fromBlock, toBlock) =>
+      publicClient.getLogs({
+        address: MARKET_ADDRESS,
+        event: FLIGHT_SETTLED_EVENT,
+        fromBlock,
+        toBlock,
+      }),
+    ),
+    logsInChunks((fromBlock, toBlock) =>
+      publicClient.getLogs({
+        address: CRYPTO_MARKET_ADDRESS,
+        event: CRYPTO_SETTLED_EVENT,
+        fromBlock,
+        toBlock,
+      }),
+    ),
+  ]);
 
-  return logs.map((l) => ({
-    marketId: Number(l.args.marketId!),
-    outcome: Number(l.args.outcome!) as Outcome,
-    observedDelay: Number(l.args.observedDelay!),
-    evidenceHash: l.args.evidenceHash!,
-    txHash: l.transactionHash!,
-  }));
+  return [
+    ...flightLogs.map((l) => ({
+      marketKey: marketKey("flights", Number(l.args.marketId!)),
+      outcome: Number(l.args.outcome!) as Outcome,
+      observedValue: BigInt(l.args.observedDelay!),
+      evidenceHash: l.args.evidenceHash!,
+      txHash: l.transactionHash!,
+    })),
+    ...cryptoLogs.map((l) => ({
+      marketKey: marketKey("crypto", Number(l.args.marketId!)),
+      outcome: Number(l.args.outcome!) as Outcome,
+      observedValue: l.args.observedValue!,
+      evidenceHash: l.args.evidenceHash!,
+      txHash: l.transactionHash!,
+    })),
+  ];
 }
 
 // ---- writes ---------------------------------------------------------------
 
-export async function sendApprove(account: Address, amount: bigint) {
+export async function sendApprove(account: Address, spender: Address, amount: bigint) {
   const wallet = walletClientFor(account);
   return wallet.writeContract({
     ...tokenContract,
     functionName: "approve",
-    args: [MARKET_ADDRESS, amount],
+    args: [spender, amount],
     chain,
     account,
   });
@@ -228,42 +325,49 @@ export async function sendMint(account: Address, amount: bigint) {
   });
 }
 
+// Writes take the market itself rather than a bare id: an id alone is
+// ambiguous now that both contracts number their markets from 0, and sending
+// `stake(3, …)` to the wrong contract would hit a real but unintended market.
+
 export async function sendStake(
   account: Address,
-  marketId: number,
+  market: Market,
   isYes: boolean,
   amount: bigint,
 ) {
   const wallet = walletClientFor(account);
-  return wallet.writeContract({
-    ...marketContract,
-    functionName: "stake",
-    args: [BigInt(marketId), isYes, amount],
-    chain,
-    account,
-  });
+  const args = [BigInt(market.id), isYes, amount] as const;
+  return market.categoryId === "crypto"
+    ? wallet.writeContract({ ...cryptoContract, functionName: "stake", args, chain, account })
+    : wallet.writeContract({ ...marketContract, functionName: "stake", args, chain, account });
 }
 
-export async function sendClaim(account: Address, marketId: number) {
+export async function sendClaim(account: Address, market: Market) {
   const wallet = walletClientFor(account);
-  return wallet.writeContract({
-    ...marketContract,
-    functionName: "claim",
-    args: [BigInt(marketId)],
-    chain,
-    account,
-  });
+  const args = [BigInt(market.id)] as const;
+  return market.categoryId === "crypto"
+    ? wallet.writeContract({ ...cryptoContract, functionName: "claim", args, chain, account })
+    : wallet.writeContract({ ...marketContract, functionName: "claim", args, chain, account });
 }
 
-export async function sendRequestSettlement(account: Address, marketId: number) {
+export async function sendRequestSettlement(account: Address, market: Market) {
   const wallet = walletClientFor(account);
-  return wallet.writeContract({
-    ...marketContract,
-    functionName: "requestSettlement",
-    args: [BigInt(marketId)],
-    chain,
-    account,
-  });
+  const args = [BigInt(market.id)] as const;
+  return market.categoryId === "crypto"
+    ? wallet.writeContract({
+        ...cryptoContract,
+        functionName: "requestSettlement",
+        args,
+        chain,
+        account,
+      })
+    : wallet.writeContract({
+        ...marketContract,
+        functionName: "requestSettlement",
+        args,
+        chain,
+        account,
+      });
 }
 
 export function waitForTx(hash: `0x${string}`) {

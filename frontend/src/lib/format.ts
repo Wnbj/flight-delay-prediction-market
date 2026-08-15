@@ -87,3 +87,12 @@ export function formatRelative(targetSeconds: number, nowSeconds: number): strin
 export function formatPercent(p: number | null): string {
   return p === null ? "—" : `${p.toFixed(0)}%`;
 }
+
+/** Crypto strike and settlement prices carry 8 decimals, as on chain. */
+const PRICE_DECIMALS = 100_000_000n;
+
+export function formatUsd(scaled: bigint): string {
+  const whole = scaled / PRICE_DECIMALS;
+  const cents = Number((scaled % PRICE_DECIMALS) / 1_000_000n);
+  return `$${whole.toLocaleString()}.${cents.toString().padStart(2, "0")}`;
+}

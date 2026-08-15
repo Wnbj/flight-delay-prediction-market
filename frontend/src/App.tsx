@@ -14,7 +14,7 @@ export default function App() {
   const wallet = useWallet();
   const data = useChainData(wallet.account);
   const router = useRouter();
-  const { view, selectedId, categoryFilter } = router;
+  const { view, selectedKey, categoryFilter } = router;
 
   const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));
 
@@ -26,20 +26,20 @@ export default function App() {
 
   useEffect(() => {
     window.scrollTo({ top: 0 });
-  }, [view, selectedId]);
+  }, [view, selectedKey]);
 
   // Real navigation (switching views, opening a market) pushes a history
   // entry, so the browser's Back button steps back through the app instead
   // of leaving it.
   const navigate = (v: View) => {
-    router.navigate({ view: v, selectedId: v === "detail" ? selectedId : null });
+    router.navigate({ view: v, selectedKey: v === "detail" ? selectedKey : null });
   };
 
-  const openMarket = (id: number) => {
-    router.navigate({ view: "detail", selectedId: id });
+  const openMarket = (key: string) => {
+    router.navigate({ view: "detail", selectedKey: key });
   };
 
-  const selected = data.markets.find((m) => m.id === selectedId) ?? null;
+  const selected = data.markets.find((m) => m.key === selectedKey) ?? null;
 
   return (
     <>
@@ -111,7 +111,7 @@ export default function App() {
                 positions={data.positions}
                 wallet={wallet}
                 balance={data.balance}
-                allowance={data.allowance}
+                allowances={data.allowances}
                 now={now}
                 onBack={() => navigate("markets")}
                 onOpenMarket={openMarket}

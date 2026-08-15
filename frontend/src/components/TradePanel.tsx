@@ -70,7 +70,7 @@ export function TradePanel({
       setBusy("approving");
       setError(null);
       try {
-        const h = await sendApprove(account, amount);
+        const h = await sendApprove(account, market.contract, amount);
         setLastTx(h);
         await waitForTx(h);
       } catch (e) {
@@ -79,7 +79,7 @@ export function TradePanel({
         return;
       }
     }
-    await run("staking", (a) => sendStake(a, market.id, side === "yes", amount));
+    await run("staking", (a) => sendStake(a, market, side === "yes", amount));
   };
 
   if (!account) {
@@ -214,7 +214,7 @@ export function TradePanel({
           className="btn"
           style={{ width: "100%" }}
           disabled={busy !== null}
-          onClick={() => void run("settling", (a) => sendRequestSettlement(a, market.id))}
+          onClick={() => void run("settling", (a) => sendRequestSettlement(a, market))}
           title="Emits SettlementRequested, which is what the CRE workflow listens for"
         >
           {busy === "settling" ? "Requesting…" : "Request settlement"}
@@ -226,7 +226,7 @@ export function TradePanel({
           className="btn btn-accent"
           style={{ width: "100%" }}
           disabled={busy !== null}
-          onClick={() => void run("claiming", (a) => sendClaim(a, market.id))}
+          onClick={() => void run("claiming", (a) => sendClaim(a, market))}
         >
           {busy === "claiming" ? "Claiming…" : `Claim ${formatToken(position.claimable)}`}
         </button>

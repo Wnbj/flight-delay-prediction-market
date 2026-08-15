@@ -1,5 +1,5 @@
 import { category } from "../lib/categories";
-import { formatRelative, formatToken, formatPercent } from "../lib/format";
+import { formatRelative, formatToken, formatPercent, formatUsd } from "../lib/format";
 import { impliedYesPercent, isOneSided, statusLabel, totalPool } from "../lib/parimutuel";
 import { MarketStatus, type Market, type StakeEvent } from "../lib/types";
 import { Sparkline } from "./Sparkline";
@@ -13,7 +13,7 @@ export function MarketCard({
   market: Market;
   events: StakeEvent[];
   now: number;
-  onOpen: (id: number) => void;
+  onOpen: (key: string) => void;
 }) {
   const cat = category(market.categoryId);
   const yes = impliedYesPercent(market);
@@ -26,13 +26,13 @@ export function MarketCard({
   return (
     <div
       className="card card-interactive"
-      onClick={() => onOpen(market.id)}
+      onClick={() => onOpen(market.key)}
       role="button"
       tabIndex={0}
       onKeyDown={(e) => {
         if (e.key === "Enter" || e.key === " ") {
           e.preventDefault();
-          onOpen(market.id);
+          onOpen(market.key);
         }
       }}
     >
@@ -69,6 +69,14 @@ export function MarketCard({
       <div className="heading" style={{ fontSize: 17, lineHeight: 1.25 }}>
         {market.question}
       </div>
+
+      {/* Crypto questions read alike at a glance, so surface the term that
+          actually distinguishes them. */}
+      {market.categoryId === "crypto" && (
+        <div className="muted" style={{ fontSize: 12 }}>
+          {market.asset} · strike {formatUsd(market.strikePrice)}
+        </div>
+      )}
 
       <Sparkline market={market} events={events} />
 

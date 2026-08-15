@@ -8,6 +8,9 @@ import { sepolia } from "viem/chains";
 export const MARKET_ADDRESS = (import.meta.env.VITE_MARKET_ADDRESS ??
   "0x09068efb21fabeac59694e01428cf438cf38e2b3") as `0x${string}`;
 
+export const CRYPTO_MARKET_ADDRESS = (import.meta.env.VITE_CRYPTO_MARKET_ADDRESS ??
+  "0x8DA11eb17D5F3f4427aA3017E95e50b132A210be") as `0x${string}`;
+
 export const TOKEN_ADDRESS = (import.meta.env.VITE_TOKEN_ADDRESS ??
   "0xcd123a8d74ef062dddd2287e87bc88eb3b208b54") as `0x${string}`;
 

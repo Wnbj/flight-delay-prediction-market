@@ -237,6 +237,89 @@ deliberately minimal (`{ status, arrivalDelayMinutes }`) so the existing mock
 gist can serve as a controllable stand-in for testing — which also restores
 the deterministic on-demand testing the AeroDataBox switch had cost.
 
+## Crypto markets
+
+`CryptoMarket.sol` — "will BTC/ETH be at or above $X at time T?", parimutuel,
+settled by the same workflow through a second log trigger. Deployed at
+`0x8DA11eb17D5F3f4427aA3017E95e50b132A210be`, sharing MockUSDC with the flight
+market so one balance covers both.
+
+Prices carry **8 decimals**, matching the Chainlink convention: a $63,000.00
+strike is `6300000000000`.
+
+### Why not Chainlink Price Feeds
+
+The obvious answer for a crypto price is a Data Feed, and it is the wrong one
+here. Measured directly on Sepolia, BTC/USD and ETH/USD update on a **flat
+60-minute heartbeat** with no deviation trigger — six consecutive rounds, all
+exactly 60 minutes apart:
+
+```bash
+cast call 0x1b44F3514812d835EB1BDB0acB33d3fA3351Ee43 \
+  "getRoundData(uint80)(uint80,int256,uint256,uint256,uint80)" <roundId> \
+  --rpc-url https://ethereum-sepolia-rpc.publicnode.com
+```
+
+A 5-minute market read from that feed would compare a price against *itself*
+roughly 92% of the time, always resolving No. The market would be rigged by
+data cadence rather than by anyone's intent. Sub-hour horizons need real-time
+exchange data, which is what the workflow fetches.
+
+### Three USD venues, and why not Binance
+
+Coinbase, Kraken and Bitstamp — all keyless, HTTPS, all quoting **USD**.
+Binance is deliberately excluded: its liquid pair is BTC/**USDT**, and pricing
+a USD market off a Tether pair adds a systematic basis rather than independent
+signal. Measured on one minute of live data, Binance sat ~$70 (0.11%) away
+while the three USD venues agreed within ~$8 (0.013%).
+
+### One-minute candles, not spot quotes
+
+Each venue is asked for the **close of the one-minute candle containing
+expiry**, never a live quote. Spot would hand each DON node a different number
+depending on the millisecond it asked, so consensus could never be exact. A
+closed historical candle is the same value for every node however far apart
+they run.
+
+That is also why `CryptoMarket` holds settlement back `SETTLEMENT_DELAY` (60s)
+past expiry: the candle does not exist until its minute is over, and settling
+at expiry itself would send the workflow looking for unpublished data and void
+the market for no reason.
+
+Venues are reconciled by **outcome versus the strike**, not numeric closeness
+— the same rule as the flight path, for the same reason: two venues a few
+cents apart either side of the strike disagree about who gets paid.
+
+### Verified end to end
+
+Two markets created with the same expiry, one struck below spot and one above,
+both sides staked, settled together against live venue data:
+
+| market | strike | result | on chain |
+|---|---|---|---|
+| 2 | $50,000 | `outcome=1 (Yes)` | status 3, observedValue `6297370000000` |
+| 3 | $80,000 | `outcome=2 (No)` | status 3, same observed price |
+
+Both confirmed by reading `core(id)` directly and by `ReportProcessed = true`
+on the forwarder — not from CLI output.
+
+```bash
+# create + stake both sides of both markets
+forge script script/CreateCryptoMarkets.s.sol:CreateCryptoMarkets \
+  --rpc-url $SEPOLIA_RPC_URL --broadcast
+# then, once SETTLEABLE_AT passes, requestSettlement and:
+cre workflow simulate ./flight-settlement --target staging-settings --broadcast \
+  --trigger-index 1 --evm-tx-hash <hash> --evm-event-index 0 --non-interactive
+```
+
+`--trigger-index 1` selects the crypto handler; `0` is still the flight one.
+
+Keep `EXPIRY_IN` generous (default 300s). `block.timestamp` in the script is
+read during forge's simulation pass, but its ten transactions then broadcast
+one per block — roughly two minutes. Too short a window and the stakes land
+after `closeTime` and revert with `TooLate`, leaving empty markets that can
+only void. That happened on the first run at 90 seconds.
+
 ### Mock gist (kept for deterministic testing)
 
 The original mock is still useful for exercising all three outcomes on
@@ -304,3 +387,18 @@ anvil --fork-url https://ethereum-sepolia-rpc.publicnode.com --port 8545
 - **Rate limits are per-second on the free plan**, and a real DON multiplies
   every settlement by its node count. A production deployment would need a
   paid tier sized to the DON, or a caching layer in front of the provider.
+- **Short-horizon crypto markets are impractical without deploy access.** A
+  5-minute market wants settling seconds after expiry; every settlement is
+  currently a hand-run command. Longer horizons are the usable ones until the
+  workflow runs on a real DON.
+- **FlightMarket does not inherit `ParimutuelMarket`.** The shared base was
+  extracted from it, and `CryptoMarket` uses it, but the flight contract is
+  already deployed with live positions and is wired into the frontend by its
+  exact ABI — migrating it would mean a new address and orphaned markets for
+  no functional gain. It should move onto the base whenever it is next
+  redeployed. Until then the parimutuel logic exists in two places, and the
+  `Settled` event differs between them (`int32` there, `int256` in the base),
+  which the frontend has to decode separately.
+- **Two dead crypto markets (ids 0 and 1)** exist from the first
+  `CreateCryptoMarkets` run, whose stakes reverted with `TooLate`. They have
+  empty pools and can only ever void.

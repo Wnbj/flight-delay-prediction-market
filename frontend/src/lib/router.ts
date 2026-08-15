@@ -15,24 +15,34 @@ import type { View } from "./view";
 
 export interface RouteState {
   view: View;
-  selectedId: number | null;
+  /**
+   * Composite market key (`"crypto:2"`), not a bare id. Each market contract
+   * numbers its markets from 0, so `/markets/2` alone would be ambiguous
+   * between a flight and a crypto market.
+   */
+  selectedKey: string | null;
   categoryFilter: CategoryId | "all";
 }
 
-const LANDING: RouteState = { view: "landing", selectedId: null, categoryFilter: "all" };
+const LANDING: RouteState = { view: "landing", selectedKey: null, categoryFilter: "all" };
 
 function parse(pathname: string, search: string): RouteState {
   const category = (new URLSearchParams(search).get("category") ?? "all") as CategoryId | "all";
 
   if (pathname === "/") return LANDING;
 
-  const marketMatch = /^\/markets\/(\d+)$/.exec(pathname);
+  // URL form is /markets/<category>/<id>, mapping to the "<category>:<id>" key.
+  const marketMatch = /^\/markets\/([a-z]+)\/(\d+)$/.exec(pathname);
   if (marketMatch) {
-    return { view: "detail", selectedId: Number(marketMatch[1]), categoryFilter: category };
+    return {
+      view: "detail",
+      selectedKey: `${marketMatch[1]}:${marketMatch[2]}`,
+      categoryFilter: category,
+    };
   }
-  if (pathname === "/markets") return { view: "markets", selectedId: null, categoryFilter: category };
-  if (pathname === "/portfolio") return { view: "portfolio", selectedId: null, categoryFilter: "all" };
-  if (pathname === "/leaderboard") return { view: "leaderboard", selectedId: null, categoryFilter: "all" };
+  if (pathname === "/markets") return { view: "markets", selectedKey: null, categoryFilter: category };
+  if (pathname === "/portfolio") return { view: "portfolio", selectedKey: null, categoryFilter: "all" };
+  if (pathname === "/leaderboard") return { view: "leaderboard", selectedKey: null, categoryFilter: "all" };
 
   // Unknown path — treat as landing, and see the mount effect below for why
   // the address bar gets corrected to match.
@@ -46,7 +56,9 @@ function buildPath(state: RouteState): string {
     case "markets":
       return state.categoryFilter === "all" ? "/markets" : `/markets?category=${state.categoryFilter}`;
     case "detail":
-      return state.selectedId === null ? "/markets" : `/markets/${state.selectedId}`;
+      return state.selectedKey === null
+        ? "/markets"
+        : `/markets/${state.selectedKey.replace(":", "/")}`;
     case "portfolio":
       return "/portfolio";
     case "leaderboard":
