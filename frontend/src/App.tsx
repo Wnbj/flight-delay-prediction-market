@@ -2,21 +2,20 @@ import { useEffect, useState } from "react";
 import { Nav } from "./components/Nav";
 import { useWallet } from "./hooks/useWallet";
 import { useChainData } from "./hooks/useChainData";
+import { useRouter } from "./lib/router";
 import { Landing } from "./views/Landing";
 import { Markets } from "./views/Markets";
 import { Detail } from "./views/Detail";
 import { Portfolio } from "./views/Portfolio";
 import { Leaderboard } from "./views/Leaderboard";
-import type { CategoryId } from "./lib/types";
 import type { View } from "./lib/view";
 
 export default function App() {
   const wallet = useWallet();
   const data = useChainData(wallet.account);
+  const router = useRouter();
+  const { view, selectedId, categoryFilter } = router;
 
-  const [view, setView] = useState<View>("landing");
-  const [selectedId, setSelectedId] = useState<number | null>(null);
-  const [categoryFilter, setCategoryFilter] = useState<CategoryId | "all">("all");
   const [now, setNow] = useState(() => Math.floor(Date.now() / 1000));
 
   // Countdowns and open/closed state depend on wall-clock time.
@@ -29,14 +28,15 @@ export default function App() {
     window.scrollTo({ top: 0 });
   }, [view, selectedId]);
 
+  // Real navigation (switching views, opening a market) pushes a history
+  // entry, so the browser's Back button steps back through the app instead
+  // of leaving it.
   const navigate = (v: View) => {
-    setView(v);
-    if (v !== "detail") setSelectedId(null);
+    router.navigate({ view: v, selectedId: v === "detail" ? selectedId : null });
   };
 
   const openMarket = (id: number) => {
-    setSelectedId(id);
-    setView("detail");
+    router.navigate({ view: "detail", selectedId: id });
   };
 
   const selected = data.markets.find((m) => m.id === selectedId) ?? null;
@@ -83,10 +83,7 @@ export default function App() {
               now={now}
               onNavigate={navigate}
               onOpenMarket={openMarket}
-              onPickCategory={(c) => {
-                setCategoryFilter(c);
-                setView("markets");
-              }}
+              onPickCategory={(c) => router.navigate({ view: "markets", categoryFilter: c })}
             />
           )}
 
@@ -96,7 +93,10 @@ export default function App() {
               stakeEvents={data.stakeEvents}
               now={now}
               categoryFilter={categoryFilter}
-              onCategoryFilter={setCategoryFilter}
+              // Filter-pill clicks rewrite the current entry rather than
+              // pushing a new one — Back should undo "left this page", not
+              // undo every filter click made while on it.
+              onCategoryFilter={(c) => router.replace({ categoryFilter: c })}
               onOpenMarket={openMarket}
             />
           )}
