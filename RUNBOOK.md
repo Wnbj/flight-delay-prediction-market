@@ -508,6 +508,14 @@ The observed value matches the 17:46:48 round exactly — the last one published
 at or before expiry — confirming the walk landed on the right round rather than
 on `latest`.
 
+### Verified live, not just backtested
+
+Market 1 — the same BTC feed, real future expiry, both sides staked — settled
+an hour later against a round that had not been published when the market was
+created: `outcome=1 (Yes)`, `observedValue=6304701036297` ($63,047.01) vs a
+$63,000 strike, in tx
+`0x1743badf35a3fe29175c78527311d20194e4fa21792178db0910e0115e490ecf`.
+
 ## Appendix: free local rehearsal via anvil fork
 
 Before spending real Sepolia ETH, the same flow can run against a local anvil
