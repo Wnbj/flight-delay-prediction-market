@@ -9,13 +9,19 @@ import {FlightMarket} from "../src/FlightMarket.sol";
  * the UI. CreateAndStake is no use for that: it fires requestSettlement in the
  * same run, which moves the market out of Open immediately.
  *
- * closeTime and settleAfter are both set ahead of now, so the market stays
- * stakeable and cannot be settled yet.
+ * The two windows are independent — the contract never requires settleAfter to
+ * follow closeTime — so a market can be open for staking and settleable at the
+ * same time. That is what you want for a POC: SETTLE_IN=0 lets the whole
+ * stake → settle → claim loop run in one sitting instead of waiting out a
+ * timer that serves no purpose here.
  *
  * Required env:
  *   MARKET      - FlightMarket address
  *   DEPLOYER_PK - key to create from
  *   THRESHOLD   - delay threshold in minutes
+ * Optional env:
+ *   CLOSE_IN    - seconds until staking closes (default 1800)
+ *   SETTLE_IN   - seconds until settlement is allowed (default 0)
  *
  * Run:
  *   forge script script/CreateOpenMarket.s.sol:CreateOpenMarket \
@@ -27,8 +33,8 @@ contract CreateOpenMarket is Script {
         uint256 pk = vm.envUint("DEPLOYER_PK");
         uint16 threshold = uint16(vm.envUint("THRESHOLD"));
 
-        uint64 closeTime = uint64(block.timestamp + 2 days);
-        uint64 settleAfter = uint64(block.timestamp + 3 days);
+        uint64 closeTime = uint64(block.timestamp + vm.envOr("CLOSE_IN", uint256(1800)));
+        uint64 settleAfter = uint64(block.timestamp + vm.envOr("SETTLE_IN", uint256(0)));
 
         vm.startBroadcast(pk);
         uint256 id = market.newMarket(
