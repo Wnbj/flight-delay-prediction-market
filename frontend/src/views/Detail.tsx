@@ -148,9 +148,20 @@ export function Detail({
                 No odds yet
               </div>
             ) : (
-              <div className="heading" style={{ fontSize: 44, color: "var(--color-accent)" }}>
-                {formatPercent(yes)}
-              </div>
+              <>
+                <div className="heading" style={{ fontSize: 44, color: "var(--color-accent)" }}>
+                  {formatPercent(yes)}
+                </div>
+                {/* A compact trend chip next to the number it explains, rather
+                    than a full-width chart with nothing around it to anchor
+                    what it is. */}
+                <div
+                  title="Implied chance of Yes over time"
+                  style={{ width: 76, height: 32, flexShrink: 0 }}
+                >
+                  <Sparkline market={market} events={stakeEvents} height={32} strokeWidth={1.5} />
+                </div>
+              </>
             )}
             <div className="muted" style={{ fontSize: 13 }}>
               {yes === null ? "first stake sets the price" : "implied chance of Yes"} ·{" "}
@@ -174,21 +185,7 @@ export function Detail({
             </div>
           )}
 
-          {isPriceMarket(market) && (
-            <div style={{ marginBottom: "var(--space-4)" }}>
-              <PriceChart market={market} />
-            </div>
-          )}
-
-          {isPriceMarket(market) && (
-            <div
-              className="muted"
-              style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: "0.06em" }}
-            >
-              Implied chance of Yes
-            </div>
-          )}
-          <Sparkline market={market} events={stakeEvents} height={160} strokeWidth={1.5} />
+          {isPriceMarket(market) && <PriceChart market={market} />}
 
           {settlement && (
             <div
