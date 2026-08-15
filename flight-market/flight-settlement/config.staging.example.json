@@ -4,5 +4,6 @@
   "apiUrl": "https://aerodatabox.p.rapidapi.com",
   "apiKey": "",
   "gasLimit": "1000000",
-  "secondaryUrl": ""
+  "secondaryUrl": "",
+  "cryptoContractAddress": "0x8DA11eb17D5F3f4427aA3017E95e50b132A210be"
 }

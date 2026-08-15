@@ -57,6 +57,11 @@ export type Config = {
    * function like `readAeroDataBox`, not changing anything below it.
    */
   secondaryUrl?: string
+  /**
+   * CryptoMarket address. Empty string leaves the crypto handler unregistered
+   * and the workflow settles flights only.
+   */
+  cryptoContractAddress?: string
   gasLimit: string
 }
 
@@ -82,6 +87,30 @@ const settlementRequestedAbi = [
 const SETTLEMENT_REQUESTED_TOPIC = toEventSelector(
   "SettlementRequested(uint256,string,uint32,uint16)",
 )
+
+// Must match CryptoMarket.sol exactly.
+const cryptoSettlementRequestedAbi = [
+  {
+    type: "event",
+    name: "SettlementRequested",
+    inputs: [
+      { name: "marketId", type: "uint256", indexed: true },
+      { name: "asset", type: "uint8", indexed: false },
+      { name: "strikePrice", type: "uint64", indexed: false },
+      { name: "expiryTime", type: "uint64", indexed: false },
+    ],
+  },
+] as const
+
+const CRYPTO_SETTLEMENT_REQUESTED_TOPIC = toEventSelector(
+  "SettlementRequested(uint256,uint8,uint64,uint64)",
+)
+
+/** Matches CryptoMarket.Asset. */
+const ASSET_SYMBOLS = ["BTC", "ETH"] as const
+
+/** Prices are carried at 8 decimals, matching the strike stored on chain. */
+const PRICE_DECIMALS = 100_000_000
 
 // --- API response --------------------------------------------------------
 // AeroDataBox (via RapidAPI): GET /flights/number/{iata}/{YYYY-MM-DD}
@@ -312,6 +341,144 @@ const fetchFlight = (
   }
 }
 
+// --- crypto price sources -------------------------------------------------
+//
+// Three independent USD spot venues. Binance is deliberately excluded: its
+// liquid pair is BTC/USDT, and pricing a USD-denominated market off a Tether
+// pair adds a systematic basis rather than independent signal. Measured live,
+// Binance sat ~$70 (0.11%) away from the USD venues while Coinbase, Kraken and
+// Bitstamp agreed within ~$6 (0.01%) of each other.
+//
+// Every source is asked for the ONE-MINUTE CANDLE CONTAINING EXPIRY and its
+// close is used, rather than a spot quote. Spot would give each DON node a
+// different number depending on the millisecond it happened to ask, so
+// consensus could never be exact. A closed historical candle is the same value
+// for every node, however far apart they run.
+
+const cryptoPriceSchemas = {
+  /** Coinbase Exchange: [[ time, low, high, open, close, volume ], …] */
+  coinbase: z.array(z.tuple([z.number(), z.number(), z.number(), z.number(), z.number(), z.number()])),
+  /** Bitstamp: named fields, unlike the others. */
+  bitstamp: z.object({
+    data: z.object({
+      ohlc: z.array(z.object({ timestamp: z.string(), close: z.string() })),
+    }),
+  }),
+  /** Kraken: { result: { <dynamic pair key>: [[ time, open, high, low, close, … ], …] } } */
+  kraken: z.object({
+    error: z.array(z.string()),
+    result: z.record(z.string(), z.unknown()),
+  }),
+}
+
+const requireOk = (response: { statusCode: number }, venue: string) => {
+  if (!ok(response as never)) {
+    throw new Error(`${venue} HTTP ${response.statusCode}`)
+  }
+}
+
+const readCoinbasePrice = (
+  sendRequester: HTTPSendRequester,
+  symbol: string,
+  minuteStart: number,
+): number => {
+  const url = `https://api.exchange.coinbase.com/products/${symbol}-USD/candles?granularity=60&start=${minuteStart}&end=${minuteStart + 60}`
+  const response = sendRequester.sendRequest({ url, method: "GET" }).result()
+  requireOk(response, "Coinbase")
+
+  const candles = cryptoPriceSchemas.coinbase.parse(json(response))
+  // The range can return the neighbouring minute too; take the exact one.
+  const candle = candles.find((c) => c[0] === minuteStart)
+  if (!candle) throw new Error(`Coinbase has no candle for minute ${minuteStart}`)
+  return candle[4]
+}
+
+const readBitstampPrice = (
+  sendRequester: HTTPSendRequester,
+  symbol: string,
+  minuteStart: number,
+): number => {
+  const url = `https://www.bitstamp.net/api/v2/ohlc/${symbol.toLowerCase()}usd/?step=60&limit=1&start=${minuteStart}`
+  const response = sendRequester.sendRequest({ url, method: "GET" }).result()
+  requireOk(response, "Bitstamp")
+
+  const parsed = cryptoPriceSchemas.bitstamp.parse(json(response))
+  const candle = parsed.data.ohlc[0]
+  if (!candle || Number(candle.timestamp) !== minuteStart) {
+    throw new Error(`Bitstamp has no candle for minute ${minuteStart}`)
+  }
+  return Number(candle.close)
+}
+
+const readKrakenPrice = (
+  sendRequester: HTTPSendRequester,
+  symbol: string,
+  minuteStart: number,
+): number => {
+  // Kraken calls Bitcoin XBT, and `since` is exclusive — ask from the minute
+  // before so the one we want is included.
+  const pair = symbol === "BTC" ? "XBTUSD" : `${symbol}USD`
+  const url = `https://api.kraken.com/0/public/OHLC?pair=${pair}&interval=1&since=${minuteStart - 60}`
+  const response = sendRequester.sendRequest({ url, method: "GET" }).result()
+  requireOk(response, "Kraken")
+
+  const parsed = cryptoPriceSchemas.kraken.parse(json(response))
+  if (parsed.error.length > 0) throw new Error(`Kraken error: ${parsed.error.join(",")}`)
+
+  // The result key is the venue's own pair name (XXBTZUSD), not what we asked
+  // for, so find the array rather than guessing the key.
+  let candles: unknown[] | undefined
+  for (const key of Object.keys(parsed.result)) {
+    if (key !== "last" && Array.isArray(parsed.result[key])) {
+      candles = parsed.result[key] as unknown[]
+      break
+    }
+  }
+  if (!candles) throw new Error("Kraken returned no candle series")
+
+  for (const row of candles) {
+    const c = row as unknown[]
+    if (Number(c[0]) === minuteStart) return Number(c[4])
+  }
+  throw new Error(`Kraken has no candle for minute ${minuteStart}`)
+}
+
+/** Price in whole units, scaled to the 8-decimal integer the contract uses. */
+const toScaledPrice = (price: number): number => Math.round(price * PRICE_DECIMALS)
+
+const fetchCryptoPrice = (
+  sendRequester: HTTPSendRequester,
+  symbol: string,
+  minuteStart: number,
+  strikePrice: number,
+): Observation => {
+  const venues: { name: string; read: () => number }[] = [
+    { name: "coinbase", read: () => readCoinbasePrice(sendRequester, symbol, minuteStart) },
+    { name: "bitstamp", read: () => readBitstampPrice(sendRequester, symbol, minuteStart) },
+    { name: "kraken", read: () => readKrakenPrice(sendRequester, symbol, minuteStart) },
+  ]
+
+  const prices = venues.map((v) => toScaledPrice(v.read()))
+
+  // Same rule as the flight path: sources must agree on the OUTCOME, not merely
+  // be numerically close. Two venues either side of the strike are only cents
+  // apart but disagree about who gets paid, and averaging them would invent an
+  // answer neither venue gave.
+  const outcomes = prices.map((p) => (p >= strikePrice ? OUTCOME_YES : OUTCOME_NO))
+  if (!outcomes.every((o) => o === outcomes[0])) {
+    throw new Error(
+      `Venues disagree on ${symbol} vs strike ${strikePrice}: ${venues
+        .map((v, i) => `${v.name}=${prices[i]}->${outcomes[i]}`)
+        .join(" vs ")}`,
+    )
+  }
+
+  const sorted = [...prices].sort((a, b) => a - b)
+  const medianPrice = sorted[Math.floor(sorted.length / 2)]!
+
+  return { delayMinutes: medianPrice, status: "priced", fetchedAt: 0 }
+}
+
 export const onSettlementRequested = (
   runtime: Runtime<Config>,
   triggerEvent: EVMLog,
@@ -444,6 +611,111 @@ export const onSettlementRequested = (
   return txHash
 }
 
+export const onCryptoSettlementRequested = (
+  runtime: Runtime<Config>,
+  triggerEvent: EVMLog,
+): string => {
+  const decoded = decodeEventLog({
+    abi: cryptoSettlementRequestedAbi,
+    data: bytesToHex(triggerEvent.data),
+    topics: triggerEvent.topics.map((t) => bytesToHex(t)) as [
+      `0x${string}`,
+      ...`0x${string}`[],
+    ],
+  })
+
+  const { marketId, asset, strikePrice, expiryTime } = decoded.args
+  const symbol = ASSET_SYMBOLS[Number(asset)]
+  if (!symbol) throw new Error(`Unknown asset index ${asset}`)
+
+  // Settle on the close of the minute expiry fell in. CryptoMarket holds
+  // settlement back a minute past expiry so this candle is always closed.
+  const minuteStart = Math.floor(Number(expiryTime) / 60) * 60
+  const strike = Number(strikePrice)
+
+  runtime.log(
+    `Settling crypto market ${marketId}: ${symbol} vs strike ${strike} at minute ${minuteStart}`,
+  )
+
+  const httpClient = new HTTPClient()
+  const aggregation = ConsensusAggregationByFields<Observation>({
+    delayMinutes: median,
+    status: identical,
+    fetchedAt: ignore,
+  })
+
+  let outcome: number
+  let observedPrice: number
+
+  try {
+    const obs = httpClient
+      .sendRequest(runtime, fetchCryptoPrice, aggregation)(symbol, minuteStart, strike)
+      .result()
+
+    observedPrice = obs.delayMinutes
+    outcome = observedPrice >= strike ? OUTCOME_YES : OUTCOME_NO
+  } catch (err) {
+    // Venues contradicted each other, or the data was unavailable. Refund
+    // rather than pick a side.
+    runtime.log(`Resolution failed, voiding crypto market ${marketId}: ${err}`)
+    outcome = OUTCOME_VOID
+    observedPrice = 0
+  }
+
+  const settledAt = Math.floor(runtime.now().getTime() / 1000)
+  const evidence = JSON.stringify({
+    marketId: marketId.toString(),
+    asset: symbol,
+    strikePrice: strike,
+    expiryTime: Number(expiryTime),
+    minuteStart,
+    observedPrice,
+    outcome,
+    settledAt,
+  })
+  const evidenceHash = keccak256(toHex(evidence))
+
+  runtime.log(
+    `Crypto market ${marketId} -> outcome=${outcome} price=${observedPrice} strike=${strike} evidence=${evidenceHash}`,
+  )
+
+  const network = getNetwork({
+    chainFamily: "evm",
+    chainSelectorName: runtime.config.chainSelectorName,
+  })
+  if (!network) {
+    throw new Error(`Unknown chain selector name: ${runtime.config.chainSelectorName}`)
+  }
+  const evmClient = new EVMClient(network.chainSelector.selector)
+
+  // Must match ParimutuelMarket._processReport: (uint256, uint8, int256, bytes32).
+  // BigInt for the same reason as the flight path — see the note there.
+  const encoded = encodeAbiParameters(
+    parseAbiParameters(
+      "uint256 marketId, uint8 outcome, int256 observedValue, bytes32 evidenceHash",
+    ),
+    [marketId, outcome, BigInt(observedPrice), evidenceHash],
+  )
+
+  const signedReport = runtime.report(prepareReportRequest(encoded)).result()
+
+  const txResult = evmClient
+    .writeReport(runtime, {
+      receiver: runtime.config.cryptoContractAddress ?? "",
+      report: signedReport,
+      gasConfig: { gasLimit: runtime.config.gasLimit },
+    })
+    .result()
+
+  if (txResult.txStatus !== TxStatus.SUCCESS) {
+    throw new Error(`Write failed: ${txResult.errorMessage || txResult.txStatus}`)
+  }
+
+  const txHash = bytesToHex(txResult.txHash ?? new Uint8Array(32))
+  runtime.log(`Settled crypto market ${marketId} in tx ${txHash}`)
+  return txHash
+}
+
 export const initWorkflow = (config: Config) => {
   const network = getNetwork({
     chainFamily: "evm",
@@ -455,7 +727,7 @@ export const initWorkflow = (config: Config) => {
 
   const evmClient = new EVMClient(network.chainSelector.selector)
 
-  return [
+  const handlers = [
     handler(
       // topics[0] = event signature; no filter on the indexed marketId.
       evmClient.logTrigger(
@@ -468,6 +740,27 @@ export const initWorkflow = (config: Config) => {
       onSettlementRequested,
     ),
   ]
+
+  // One workflow, two triggers. The crypto market is a separate contract with
+  // its own event signature, so it needs its own trigger — but it settles
+  // through the same report envelope, so it belongs in the same workflow
+  // rather than a second deployment to keep in sync.
+  if (config.cryptoContractAddress && config.cryptoContractAddress !== "") {
+    handlers.push(
+      handler(
+        evmClient.logTrigger(
+          logTriggerConfig({
+            addresses: [config.cryptoContractAddress as `0x${string}`],
+            topics: [[CRYPTO_SETTLEMENT_REQUESTED_TOPIC]],
+            confidence: "LATEST",
+          }),
+        ),
+        onCryptoSettlementRequested,
+      ),
+    )
+  }
+
+  return handlers
 }
 
 export async function main() {
