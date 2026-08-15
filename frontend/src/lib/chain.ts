@@ -13,9 +13,10 @@ import {
   DEPLOY_BLOCK,
   MARKET_ADDRESS,
   RPC_URL,
+  STOCK_MARKET_ADDRESS,
   TOKEN_ADDRESS,
 } from "./config";
-import { cryptoMarketAbi, flightMarketAbi, mockUsdcAbi } from "./abi";
+import { cryptoMarketAbi, flightMarketAbi, mockUsdcAbi, stockMarketAbi } from "./abi";
 import {
   MarketStatus,
   Outcome,
@@ -42,6 +43,7 @@ export function walletClientFor(account: Address) {
 
 const marketContract = { address: MARKET_ADDRESS, abi: flightMarketAbi } as const;
 const cryptoContract = { address: CRYPTO_MARKET_ADDRESS, abi: cryptoMarketAbi } as const;
+const stockContract = { address: STOCK_MARKET_ADDRESS, abi: stockMarketAbi } as const;
 const tokenContract = { address: TOKEN_ADDRESS, abi: mockUsdcAbi } as const;
 
 /** Market ids restart at 0 per contract, so identity has to carry the category. */
@@ -49,7 +51,14 @@ export const marketKey = (categoryId: string, id: number) => `${categoryId}:${id
 
 /** Which contract a market's stake/claim calls should go to. */
 export function contractFor(market: Market) {
-  return market.categoryId === "crypto" ? cryptoContract : marketContract;
+  switch (market.categoryId) {
+    case "crypto":
+      return cryptoContract;
+    case "stocks":
+      return stockContract;
+    default:
+      return marketContract;
+  }
 }
 
 async function readFlightMarkets(): Promise<Market[]> {
@@ -143,10 +152,77 @@ async function readCryptoMarkets(): Promise<Market[]> {
   });
 }
 
+async function readStockMarkets(): Promise<Market[]> {
+  const n = Number(
+    (await publicClient.readContract({
+      ...stockContract,
+      functionName: "marketCount",
+    })) as bigint,
+  );
+  if (n === 0) return [];
+
+  const results = await publicClient.multicall({
+    contracts: Array.from({ length: n }, (_, i) => i).flatMap((i) => [
+      { ...stockContract, functionName: "core" as const, args: [BigInt(i)] as const },
+      { ...stockContract, functionName: "terms" as const, args: [BigInt(i)] as const },
+    ]),
+    allowFailure: false,
+  });
+
+  // The symbol lives in the contract's feed registry rather than in the
+  // market's terms, so it is looked up by feed address in a second pass.
+  const feeds = Array.from(
+    { length: n },
+    (_, i) => (results[i * 2 + 1] as unknown as [`0x${string}`, bigint, bigint, number])[0],
+  );
+  const symbols = (await publicClient.multicall({
+    contracts: feeds.map((feed) => ({
+      ...stockContract,
+      functionName: "symbolFor" as const,
+      args: [feed] as const,
+    })),
+    allowFailure: false,
+  })) as unknown as string[];
+
+  return Array.from({ length: n }, (_, i) => {
+    const c = results[i * 2] as unknown as [
+      string, bigint, bigint, number, number, `0x${string}`, bigint, bigint, bigint,
+    ];
+    const t = results[i * 2 + 1] as unknown as [`0x${string}`, bigint, bigint, number];
+    return {
+      id: i,
+      key: marketKey("stocks", i),
+      contract: STOCK_MARKET_ADDRESS,
+      categoryId: "stocks",
+      question: c[0],
+      closeTime: Number(c[1]),
+      settleAfter: Number(c[2]),
+      status: Number(c[3]) as MarketStatus,
+      outcome: Number(c[4]) as Outcome,
+      evidenceHash: c[5],
+      observedPrice: c[6],
+      yesPool: c[7],
+      noPool: c[8],
+      feed: t[0],
+      strikePrice: t[1],
+      expiryTime: Number(t[2]),
+      maxStaleness: Number(t[3]),
+      // A feed removed from the registry after the market was created leaves
+      // the market perfectly settleable but nameless; show the address rather
+      // than an empty label.
+      symbol: symbols[i] || t[0].slice(0, 10),
+    } satisfies Market;
+  });
+}
+
 /** Every market across every deployed market contract. */
 export async function readMarkets(): Promise<Market[]> {
-  const [flights, crypto] = await Promise.all([readFlightMarkets(), readCryptoMarkets()]);
-  return [...flights, ...crypto];
+  const [flights, crypto, stocks] = await Promise.all([
+    readFlightMarkets(),
+    readCryptoMarkets(),
+    readStockMarkets(),
+  ]);
+  return [...flights, ...crypto, ...stocks];
 }
 
 export interface WalletStake {
@@ -256,15 +332,18 @@ export async function readStakeEvents(): Promise<StakeEvent[]> {
       })),
     );
 
-  const [flights, crypto] = await Promise.all([
+  const [flights, crypto, stocks] = await Promise.all([
     read(MARKET_ADDRESS, "flights"),
     read(CRYPTO_MARKET_ADDRESS, "crypto"),
+    read(STOCK_MARKET_ADDRESS, "stocks"),
   ]);
-  return [...flights, ...crypto];
+  return [...flights, ...crypto, ...stocks];
 }
 
 export async function readSettledEvents(): Promise<SettledEvent[]> {
-  const [flightLogs, cryptoLogs] = await Promise.all([
+  // The stock contract inherits the same base as the crypto one, so it emits
+  // the identical int256 Settled event.
+  const [flightLogs, cryptoLogs, stockLogs] = await Promise.all([
     logsInChunks((fromBlock, toBlock) =>
       publicClient.getLogs({
         address: MARKET_ADDRESS,
@@ -276,6 +355,14 @@ export async function readSettledEvents(): Promise<SettledEvent[]> {
     logsInChunks((fromBlock, toBlock) =>
       publicClient.getLogs({
         address: CRYPTO_MARKET_ADDRESS,
+        event: CRYPTO_SETTLED_EVENT,
+        fromBlock,
+        toBlock,
+      }),
+    ),
+    logsInChunks((fromBlock, toBlock) =>
+      publicClient.getLogs({
+        address: STOCK_MARKET_ADDRESS,
         event: CRYPTO_SETTLED_EVENT,
         fromBlock,
         toBlock,
@@ -293,6 +380,13 @@ export async function readSettledEvents(): Promise<SettledEvent[]> {
     })),
     ...cryptoLogs.map((l) => ({
       marketKey: marketKey("crypto", Number(l.args.marketId!)),
+      outcome: Number(l.args.outcome!) as Outcome,
+      observedValue: l.args.observedValue!,
+      evidenceHash: l.args.evidenceHash!,
+      txHash: l.transactionHash!,
+    })),
+    ...stockLogs.map((l) => ({
+      marketKey: marketKey("stocks", Number(l.args.marketId!)),
       outcome: Number(l.args.outcome!) as Outcome,
       observedValue: l.args.observedValue!,
       evidenceHash: l.args.evidenceHash!,

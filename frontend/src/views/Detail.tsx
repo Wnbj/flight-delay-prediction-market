@@ -19,6 +19,7 @@ import {
 import {
   MarketStatus,
   Outcome,
+  priceAssetLabel,
   type Market,
   type Position,
   type SettledEvent,
@@ -265,7 +266,7 @@ export function Detail({
                   </>
                 ) : (
                   <>
-                    Resolves <strong>Yes</strong> if {market.asset} is at or above{" "}
+                    Resolves <strong>Yes</strong> if {priceAssetLabel(market)} is at or above{" "}
                     {formatUsd(market.strikePrice)} at {formatTimestamp(market.expiryTime)}.
                     Resolves <strong>No</strong> if it is below.
                   </>
@@ -281,7 +282,7 @@ export function Detail({
               >
                 <Stat label="Pool" value={formatToken(totalPool(market))} />
                 <Stat label="Backers" value={String(traders)} />
-                {market.categoryId === "crypto" && (
+                {market.categoryId !== "flights" && (
                   <Stat label="Strike" value={formatUsd(market.strikePrice)} />
                 )}
                 <Stat label="Closes" value={formatTimestamp(market.closeTime)} />
@@ -357,7 +358,7 @@ export function Detail({
                 ) : (
                   <>
                     <li>
-                      <strong>Yes</strong> — {market.asset} at or above{" "}
+                      <strong>Yes</strong> — {priceAssetLabel(market)} at or above{" "}
                       {formatUsd(market.strikePrice)} at expiry.
                     </li>
                     <li>
@@ -385,6 +386,24 @@ export function Detail({
                   matter when it runs. If the venues disagree about which side of the strike the
                   price landed, the market voids rather than picking a winner.
                 </p>
+              )}
+              {market.categoryId === "stocks" && (
+                <>
+                  <p>
+                    The settlement price comes from the Chainlink {market.symbol}/USD Data Feed —
+                    the round in force at expiry, read at the block the settlement request was
+                    mined in. Pinning the block is what lets every oracle node read the same
+                    number instead of whatever the chain head happened to be when each one asked.
+                  </p>
+                  <p>
+                    A feed keeps publishing when the exchange behind it is closed, repeating the
+                    last price with a fresh timestamp. So this market <strong>voids</strong> if
+                    the price did not change between staking closing and expiry: a market whose
+                    answer never moved while it was live was decided before the last stake was
+                    placed. It also voids if the round at expiry is more than{" "}
+                    {Math.round(market.maxStaleness / 3600)} hours old.
+                  </p>
+                </>
               )}
             </div>
           )}

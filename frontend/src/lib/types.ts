@@ -15,7 +15,7 @@ export enum Outcome {
   Void = 3,
 }
 
-export type CategoryId = "flights" | "sports" | "crypto" | "pop" | "current";
+export type CategoryId = "flights" | "sports" | "crypto" | "stocks" | "pop" | "current";
 
 export type Side = "yes" | "no";
 
@@ -61,12 +61,42 @@ export interface CryptoMarket extends MarketBase {
   observedPrice: bigint;
 }
 
+export interface StockMarket extends MarketBase {
+  categoryId: "stocks";
+  /** Registered feed symbol, e.g. "CSPX". */
+  symbol: string;
+  /** The Chainlink aggregator this market settles from. */
+  feed: `0x${string}`;
+  /** Strike and observed price both carry 8 decimals, as on chain. */
+  strikePrice: bigint;
+  expiryTime: number;
+  /** How stale the round at expiry may be before the market voids, in seconds. */
+  maxStaleness: number;
+  observedPrice: bigint;
+}
+
 /**
  * A union rather than one wide interface with optional fields: it makes
  * reading a flight's `thresholdMinutes` off a crypto market a compile error
  * instead of a silent `undefined` rendered to the user.
  */
-export type Market = FlightMarket | CryptoMarket;
+export type Market = FlightMarket | CryptoMarket | StockMarket;
+
+/** Markets whose terms are a price against a strike, whatever the asset. */
+export type PriceMarket = CryptoMarket | StockMarket;
+
+export function isPriceMarket(m: Market): m is PriceMarket {
+  return m.categoryId === "crypto" || m.categoryId === "stocks";
+}
+
+/**
+ * What to call the thing being priced. Crypto markets name a fixed asset from
+ * an enum; stock markets name whichever feed symbol the owner registered, so
+ * the label has to come from different places.
+ */
+export function priceAssetLabel(m: PriceMarket): string {
+  return m.categoryId === "crypto" ? m.asset : m.symbol;
+}
 
 export interface StakeEvent {
   /** Composite market key — see MarketBase.key. */

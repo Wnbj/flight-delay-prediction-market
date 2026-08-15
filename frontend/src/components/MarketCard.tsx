@@ -1,7 +1,13 @@
 import { category } from "../lib/categories";
 import { formatToken, formatPercent, formatUsd } from "../lib/format";
 import { impliedYesPercent, isOneSided, statusLabel, totalPool } from "../lib/parimutuel";
-import { MarketStatus, type Market, type StakeEvent } from "../lib/types";
+import {
+  isPriceMarket,
+  MarketStatus,
+  priceAssetLabel,
+  type Market,
+  type StakeEvent,
+} from "../lib/types";
 import { Countdown } from "./Countdown";
 import { LivePrice } from "./LivePrice";
 import { Sparkline } from "./Sparkline";
@@ -70,9 +76,9 @@ export function MarketCard({
 
       {/* Crypto questions read alike at a glance, so surface the term that
           actually distinguishes them. */}
-      {market.categoryId === "crypto" && (
+      {isPriceMarket(market) && (
         <div className="muted" style={{ fontSize: 12 }}>
-          {market.asset} · strike {formatUsd(market.strikePrice)}
+          {priceAssetLabel(market)} · strike {formatUsd(market.strikePrice)}
         </div>
       )}
 

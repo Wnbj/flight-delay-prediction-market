@@ -4,7 +4,8 @@ import type { CategoryId } from "./types";
 /**
  * Category registry — the extension point for new market types.
  *
- * `flights` and `crypto` are live, each backed by its own contract. The rest
+ * `flights`, `crypto` and `stocks` are live, each backed by its own contract.
+ * The rest
  * are declared but disabled: they render in the UI as "coming soon" rather
  * than being hidden, so the shape of the product is visible without inventing
  * markets that do not exist.
@@ -73,6 +74,23 @@ const cryptoIcon = (size: number) => (
   </svg>
 );
 
+const stocksIcon = (size: number) => (
+  <svg viewBox="0 0 64 64" width={size} height={size} aria-hidden="true">
+    <circle cx="32" cy="32" r="20" fill="none" stroke="var(--color-accent)" strokeWidth="1.6" />
+    <path
+      d="M21 39l7-8 5 4 10-12"
+      fill="none"
+      stroke="var(--color-accent)"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    />
+    <path d="M39 23h5v5" fill="none" stroke="var(--color-accent)" strokeWidth="1.8"
+      strokeLinecap="round" strokeLinejoin="round" />
+    <path d="M20 44h24" stroke="var(--color-neutral-500)" strokeWidth="1" />
+  </svg>
+);
+
 const popIcon = (size: number) => (
   <svg viewBox="0 0 64 64" width={size} height={size} aria-hidden="true">
     <circle cx="32" cy="32" r="20" fill="none" stroke="var(--color-accent)" strokeWidth="1.6" />
@@ -116,6 +134,14 @@ export const CATEGORIES: CategoryDef[] = [
     live: true,
     blurb: "BTC and ETH price levels, settled on median exchange data.",
     icon: cryptoIcon,
+  },
+  {
+    id: "stocks",
+    name: "Stocks",
+    tagStyle: TAG.accent,
+    live: true,
+    blurb: "Index and commodity levels, settled from Chainlink Data Feeds.",
+    icon: stocksIcon,
   },
   {
     id: "pop",
