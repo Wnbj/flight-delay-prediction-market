@@ -290,6 +290,31 @@ Venues are reconciled by **outcome versus the strike**, not numeric closeness
 — the same rule as the flight path, for the same reason: two venues a few
 cents apart either side of the strike disagree about who gets paid.
 
+### Never ask a venue for exactly the candle you want
+
+Market 4 voided in production with `Coinbase has no candle for minute
+1786816800` — a minute that had traded 1.04 BTC and that a wider request
+returns without complaint. The request was for exactly `[T, T+60]`, and
+Coinbase returns an **empty array** for that shape, reproducibly.
+
+Measured over 114 requests across both products:
+
+| window | candle missing |
+|---|---|
+| `[T, T+60]` | always |
+| `[T-60, T+60]` | 8% |
+| `[T-300, T+300]` | never |
+
+So every venue is now asked for a **span** and searched for the exact minute,
+never trusted to return the bucket requested. The wide Coinbase response is
+~650 bytes, far inside the 250kb simulation limit, so the margin is free.
+Bitstamp's `limit=1` anchored on `T` was the same bet and was widened too —
+it had not failed, but its failure mode is identical: a market voided on data
+that exists.
+
+Kraken looks flaky if you loop over it quickly; that is its public rate limit,
+not missing data. One call per settlement is fine.
+
 ### Verified end to end
 
 Two markets created with the same expiry, one struck below spot and one above,
@@ -319,6 +344,44 @@ read during forge's simulation pass, but its ten transactions then broadcast
 one per block — roughly two minutes. Too short a window and the stakes land
 after `closeTime` and revert with `TooLate`, leaving empty markets that can
 only void. That happened on the first run at 90 seconds.
+
+### The standing slate
+
+`CreateCryptoSlate.s.sol` creates the product slate rather than a settlement
+test: BTC and ETH at **5 minutes, 15 minutes and 1 hour**, one strike per asset
+set just off spot so the questions are genuinely open, the same strike across
+all three horizons so the implied odds fan out with *time* rather than level.
+
+```bash
+BTC_STRIKE=63000 ETH_STRIKE=1882 STAKE_WINDOW=480 \
+forge script script/CreateCryptoSlate.s.sol:CreateCryptoSlate \
+  --rpc-url $SEPOLIA_RPC_URL --broadcast --slow
+```
+
+Staking closes for every market at one shared `closeTime`, well before the
+shortest expiry. That is the whole point of `closeTime` being separate from
+`expiryTime`: with the book open right up to expiry, anyone could stake a
+second before the price is read and take the pot off people who committed
+early. `STAKE_WINDOW` must clear how long the script takes to land — 22
+transactions at one per block is about four and a half minutes.
+
+Settled against live venue data:
+
+| market | asset | horizon | strike | observed | outcome |
+|---|---|---|---|---|---|
+| 4  | BTC | 5 min  | $63,000 | — | **Void** — the Coinbase window bug above |
+| 10 | BTC | 5 min  | $63,000 | $63,020.26 | Yes — same path, after the fix |
+| 5  | BTC | 15 min | $63,000 | $63,023.01 | Yes |
+| 7  | ETH | 5 min  | $1,882  | $1,882.40  | Yes |
+| 8  | ETH | 15 min | $1,882  | $1,883.25  | Yes |
+
+Market 10 exists because market 4 died of the Coinbase bug; it re-ran the exact
+5-minute BTC path that failed, and settled.
+
+A strike set *exactly* at spot is the one place venues are most likely to
+straddle the line and void the market — at one sampled minute the three venues
+were $0.40 apart but sat either side of $1,882. Genuine behaviour, not a fault,
+but worth knowing when choosing a strike for a demo.
 
 ### Mock gist (kept for deterministic testing)
 

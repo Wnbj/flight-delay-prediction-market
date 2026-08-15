@@ -46,6 +46,18 @@ contract CreateCryptoSlate is Script {
         string label;
     }
 
+    /// `vm.toString` gives "63000", which reads badly next to the "$63,000.00"
+    /// the UI formats from the same strike. The question is the most prominent
+    /// text on a card, so group the thousands.
+    function _dollars(uint64 amount) internal pure returns (string memory out) {
+        bytes memory digits = bytes(vm.toString(uint256(amount)));
+        for (uint256 i = 0; i < digits.length; i++) {
+            uint256 remaining = digits.length - i;
+            if (i > 0 && remaining % 3 == 0) out = string.concat(out, ",");
+            out = string.concat(out, string(abi.encodePacked(digits[i])));
+        }
+    }
+
     function run() external {
         CryptoMarket market = CryptoMarket(vm.envAddress("CRYPTO_MARKET"));
         MockUSDC token = MockUSDC(vm.envAddress("TOKEN"));
@@ -74,7 +86,7 @@ contract CreateCryptoSlate is Script {
             for (uint256 h = 0; h < horizons.length; h++) {
                 uint256 id = market.newMarket(
                     string.concat(
-                        "Will ", symbol, " be at or above $", vm.toString(dollars), " in ", horizons[h].label, "?"
+                        "Will ", symbol, " be at or above $", _dollars(dollars), " in ", horizons[h].label, "?"
                     ),
                     asset,
                     dollars * PRICE_SCALE,
