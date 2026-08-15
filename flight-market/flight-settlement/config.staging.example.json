@@ -3,5 +3,6 @@
   "chainSelectorName": "ethereum-testnet-sepolia",
   "apiUrl": "https://aerodatabox.p.rapidapi.com",
   "apiKey": "",
-  "gasLimit": "1000000"
+  "gasLimit": "1000000",
+  "secondaryUrl": ""
 }

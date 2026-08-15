@@ -143,26 +143,47 @@ AeroDataBox's `FlightStatus` enum collapses to the three states
 
 | AeroDataBox status | bucketed | outcome |
 |---|---|---|
-| `Canceled`, `CanceledUncertain`, `Diverted` | `cancelled` | Yes (per contract rules) |
+| `Canceled`, `Diverted` | `cancelled` | Yes (per contract rules) |
 | `Arrived` | `landed` | Yes/No by `arrival.revisedTime - arrival.scheduledTime` vs threshold |
-| anything else (`Expected`, `EnRoute`, `Delayed`, …) | `airborne` | Void — no final delay yet |
+| `CanceledUncertain` and anything else (`Expected`, `EnRoute`, `Delayed`, …) | `airborne` | Void — no confirmed result |
 
-Only `Arrived` computes a real delay; everything short of landing voids
-rather than guessing, same as before.
+Only `Arrived` computes a real delay; everything short of a confirmed
+landing or cancellation voids rather than guessing.
 
-### Verified against live data — two real bugs found this way
+**`CanceledUncertain` deliberately does not pay out.** AeroDataBox defines it
+as "status of the flight is uncertain, may be cancelled" — a maybe, not a
+fact — while the UI promises Yes for "cancelled or diverted". It originally
+sat in the same branch as a confirmed cancellation and resolved markets to
+Yes, paying real money on an unconfirmed signal. It now voids and refunds.
+Not an edge case: **75 of 565 arrivals sampled at ORD (13%)** carried this
+status.
 
-Tested with `cre workflow simulate` (no `--broadcast`, free) against two real
-British Airways BA286 flights (a real IATA/flight-number, coincidentally
-already used as this repo's placeholder before any of this was live):
+### Verified against live data — three real bugs found this way
+
+Tested with `cre workflow simulate` (no `--broadcast`, free) against real
+flights. Cancelled ones were found by scanning airport schedules with
+`withCancelled=true` — one call returns hundreds of flights, so finding a
+genuine cancellation costs one request rather than dozens of guesses:
+
+```bash
+curl -s "https://aerodatabox.p.rapidapi.com/flights/airports/iata/LHR/2026-08-14T06:00/2026-08-14T18:00?direction=Departure&withCancelled=true" \
+  -H "X-RapidAPI-Key: $KEY" -H "X-RapidAPI-Host: aerodatabox.p.rapidapi.com"
+```
 
 | market | flight | AeroDataBox status | result |
 |---|---|---|---|
 | 5 | BA286, 2026-08-13 | `Arrived`, 33 min early | `outcome=2 (No) delay=-33m` |
-| 6 | BA286, 2026-08-14 | `EnRoute` | `outcome=3 (Void) delay=0m` |
+| 6 | BA286, 2026-08-14 | `EnRoute` | `outcome=3 (Void)` |
+| 7 | BA143, 2026-08-14 | `Canceled` | `outcome=1 (Yes)` |
+| 8 | DL1880, 2026-08-14 | `CanceledUncertain` | `outcome=3 (Void)` |
 
-Both required fixing bugs that only showed up against real data — the mock
-never exercised either path:
+`Diverted` remains untested — none found across ~800 flights sampled at JFK
+and ORD; genuine diversions are rare. It shares the `Canceled` branch
+exactly, so the logic is covered even though that specific enum value has not
+been seen live.
+
+Three bugs showed up only against real data — the mock never exercised any of
+these paths:
 
 1. **AeroDataBox timestamps aren't RFC 3339** — `"2026-08-14 12:55Z"` (space,
    no seconds). `Date.parse` on this is implementation-defined: V8 (bun, used
@@ -179,10 +200,42 @@ never exercised either path:
    documented cast, since viem's type-level ABI mapping expects `number` for
    int32) so the comparison is bigint-vs-bigint on both sides.
 
-Both fixes are in `main.ts`, with comments at the fix site pointing back to
-this. **Canceled/Diverted is unverified** — no real cancelled/diverted flight
-was on hand to test against; the branch is unchanged logic from the mock
-version, just fed real data now.
+3. **`CanceledUncertain` was paying markets out** — see "Status mapping"
+   above. Found while hunting for a real cancelled flight to test the
+   disrupted branch.
+
+All three fixes are in `main.ts`, with comments at the fix site pointing back
+to this.
+
+## Two independent sources
+
+`ConsensusAggregationByFields` runs per node and protects against a dishonest
+or broken *node*. It cannot protect against a wrong *source*, since every
+node queries the same one. Setting `secondaryUrl` in the config adds a second
+provider; empty string runs single-source.
+
+**Sources are compared by outcome, not by value.** Two sources reporting 44
+and 46 minutes against a 45-minute threshold are barely two minutes apart,
+but they disagree about who gets paid — averaging them would manufacture an
+answer neither source gave. `outcomeFor` is applied per source and the
+results must match; if they don't, the workflow throws and the market voids,
+refunding everyone. Only once the outcomes agree is the median taken, and any
+remaining spread is noise within one side of the threshold.
+
+Verified against market 5 (BA286, AeroDataBox reports `Arrived` 33 min
+early), using the mock gist as a controllable second provider:
+
+| secondary says | result |
+|---|---|
+| `landed`, −33 min (agrees) | `outcome=2 (No)` — settles normally |
+| `landed`, +90 min (Yes vs No) | **Void** — `Sources disagree on outcome ... landed/-33m->2 vs landed/90m->1` |
+| `airborne` vs a `Canceled` flight | **Void** — disagreement on status, not just delay |
+
+A real second provider needs its own key and a `readAeroDataBox`-sized
+adapter function; nothing below that layer changes. The secondary contract is
+deliberately minimal (`{ status, arrivalDelayMinutes }`) so the existing mock
+gist can serve as a controllable stand-in for testing — which also restores
+the deterministic on-demand testing the AeroDataBox switch had cost.
 
 ### Mock gist (kept for deterministic testing)
 
@@ -237,16 +290,17 @@ anvil --fork-url https://ethereum-sepolia-rpc.publicnode.com --port 8545
 - `project.yaml` staging RPC points at `https://ethereum-sepolia-rpc.publicnode.com`
   (real Sepolia). Swap to a local anvil fork URL if rehearsing for free (see
   Appendix).
-- **AeroDataBox is verified for Yes/No (landed) and Void (in-progress) — not
-  for Canceled/Diverted.** No real cancelled/diverted flight was on hand to
-  test against; see "Verified against live data" above. Also: the gist mock
-  it replaced no longer matches the response shape `fetchFlight` expects, so
-  deterministic on-demand testing (pick any outcome at will) isn't available
-  until either a real flight with known timing is used, or a shim reviving
-  the mock is built.
-- **Single data source.** `ConsensusAggregationByFields` already runs
-  per-node, but every node calls the same AeroDataBox endpoint — it protects
-  against a dishonest/broken *node*, not a wrong *source*. A second
-  independent provider feeding the same `median` aggregation would close
-  that gap; not built, since it's a straightforward extension of the
-  existing pattern rather than a new mechanism.
+- **`Diverted` is the one status never seen live** — none across ~800 flights
+  sampled at JFK and ORD. It shares the `Canceled` branch exactly, so the
+  logic is exercised, but that specific enum value has not come back from the
+  API in testing.
+- **Only one real provider is wired.** The two-source mechanism and its
+  disagreement handling are built and tested (see "Two independent sources"),
+  but the second slot was tested with the mock gist standing in. A genuinely
+  independent second provider still needs its own subscription — free,
+  HTTPS-capable flight APIs with actual arrival times are scarce (AviationStack's
+  free tier is HTTP-only, which CRE rejects; FlightLabs' free allowance is ~50
+  requests; FlightAware is paid).
+- **Rate limits are per-second on the free plan**, and a real DON multiplies
+  every settlement by its node count. A production deployment would need a
+  paid tier sized to the DON, or a caching layer in front of the provider.

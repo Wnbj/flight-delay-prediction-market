@@ -44,6 +44,19 @@ export type Config = {
   chainSelectorName: string
   apiUrl: string          // AeroDataBox base URL, e.g. https://aerodatabox.p.rapidapi.com
   apiKey: string          // RapidAPI key for AeroDataBox — never committed, see config.staging.example.json
+  /**
+   * Optional second, independent provider. Empty string disables it and the
+   * workflow runs single-source.
+   *
+   * DON consensus protects against a dishonest or broken *node*; it cannot
+   * protect against a wrong *source*, because every node queries the same one.
+   * A second provider is what closes that gap.
+   *
+   * Expected to serve `{ status, arrivalDelayMinutes }` — see
+   * `simpleSourceSchema`. Adapting a real provider means writing one small
+   * function like `readAeroDataBox`, not changing anything below it.
+   */
+  secondaryUrl?: string
   gasLimit: string
 }
 
@@ -131,13 +144,30 @@ type Observation = {
   fetchedAt: number
 }
 
-const fetchFlight = (
+/** What one provider reported, before any cross-source reconciliation. */
+type SourceReading = {
+  delayMinutes: number
+  status: string
+}
+
+/**
+ * Shape expected from a secondary provider. Deliberately minimal so adapting
+ * a new one is a small function rather than a schema negotiation — and so the
+ * repo's existing mock gist can stand in as a controllable second source when
+ * testing the disagreement path.
+ */
+const simpleSourceSchema = z.object({
+  status: z.string(),
+  arrivalDelayMinutes: z.number().nullable(),
+})
+
+const readAeroDataBox = (
   sendRequester: HTTPSendRequester,
   apiUrl: string,
   apiKey: string,
   flightIata: string,
   departureDateIso: string,
-): Observation => {
+): SourceReading => {
   const url = `${apiUrl}/flights/number/${flightIata}/${departureDateIso}?dateLocalRole=Departure`
   const response = sendRequester
     .sendRequest({
@@ -186,12 +216,98 @@ const fetchFlight = (
     delayMinutes = Math.round((actual - scheduled) / 60_000)
   }
 
-  // Bucket down to the three states the settlement logic cares about.
-  const bucketedStatus = isDisrupted ? "cancelled" : isLanded ? "landed" : "airborne"
-
   return {
     delayMinutes,
-    status: bucketedStatus,
+    status: isDisrupted ? "cancelled" : isLanded ? "landed" : "airborne",
+  }
+}
+
+const readSecondary = (
+  sendRequester: HTTPSendRequester,
+  url: string,
+  flightIata: string,
+  departureDateIso: string,
+): SourceReading => {
+  const response = sendRequester
+    .sendRequest({
+      url: `${url}?flight=${flightIata}&date=${departureDateIso}`,
+      method: "GET",
+    })
+    .result()
+
+  if (!ok(response)) {
+    throw new Error(`Secondary source HTTP ${response.statusCode} for ${flightIata}`)
+  }
+
+  const parsed = simpleSourceSchema.parse(json(response))
+  const status = parsed.status.toLowerCase()
+  return {
+    delayMinutes:
+      parsed.arrivalDelayMinutes === null ? 0 : Math.round(parsed.arrivalDelayMinutes),
+    status: status === "diverted" ? "cancelled" : status,
+  }
+}
+
+/**
+ * Which way a single source would settle the market. Reconciliation compares
+ * *this*, not the raw minutes: two sources reporting 44 and 46 against a
+ * 45-minute threshold are only ~2 minutes apart, but they disagree about who
+ * gets paid. Averaging them would silently manufacture an answer neither
+ * source actually gave.
+ */
+const outcomeFor = (reading: SourceReading, thresholdMinutes: number): number => {
+  if (reading.status === "cancelled") return OUTCOME_YES
+  if (reading.status !== "landed") return OUTCOME_VOID
+  return reading.delayMinutes >= thresholdMinutes ? OUTCOME_YES : OUTCOME_NO
+}
+
+const fetchFlight = (
+  sendRequester: HTTPSendRequester,
+  apiUrl: string,
+  apiKey: string,
+  secondaryUrl: string,
+  flightIata: string,
+  departureDateIso: string,
+  thresholdMinutes: number,
+): Observation => {
+  const readings: SourceReading[] = [
+    readAeroDataBox(sendRequester, apiUrl, apiKey, flightIata, departureDateIso),
+  ]
+
+  // Empty string = single-source mode. A failing secondary is NOT swallowed:
+  // losing the cross-check silently would leave the market resolving on one
+  // source while appearing to be corroborated.
+  if (secondaryUrl !== "") {
+    readings.push(readSecondary(sendRequester, secondaryUrl, flightIata, departureDateIso))
+  }
+
+  const outcomes = readings.map((r) => outcomeFor(r, thresholdMinutes))
+  const allAgree = outcomes.every((o) => o === outcomes[0])
+  if (!allAgree) {
+    // Throwing voids the market and refunds everyone. When independent
+    // sources contradict each other about a real-world fact, refusing to
+    // settle is the honest answer — picking a winner would be a coin flip
+    // dressed up as data.
+    throw new Error(
+      `Sources disagree on outcome for ${flightIata}: ${readings
+        .map((r, i) => `${r.status}/${r.delayMinutes}m->${outcomes[i]}`)
+        .join(" vs ")}`,
+    )
+  }
+
+  // Sources agree on the outcome, so any spread left is noise within one
+  // side of the threshold. Median generalises past two sources; with two it
+  // is the midpoint, rounded to keep nodes converging on one integer.
+  const sorted = [...readings].sort((a, b) => a.delayMinutes - b.delayMinutes)
+  const mid = sorted.length / 2
+  const medianDelay =
+    sorted.length % 2 === 1
+      ? sorted[Math.floor(mid)]!.delayMinutes
+      : Math.round((sorted[mid - 1]!.delayMinutes + sorted[mid]!.delayMinutes) / 2)
+
+  return {
+    delayMinutes: medianDelay,
+    status: readings[0]!.status,
     fetchedAt: 0,
   }
 }
@@ -237,25 +353,23 @@ export const onSettlementRequested = (
       .sendRequest(runtime, fetchFlight, aggregation)(
         runtime.config.apiUrl,
         runtime.config.apiKey,
+        runtime.config.secondaryUrl ?? "",
         flightIata,
         departureDateIso,
+        Number(thresholdMinutes),
       )
       .result()
 
     observedDelay = obs.delayMinutes
     observedStatus = obs.status
 
-    const isDisrupted = obs.status === "cancelled"
-    const isLanded = obs.status === "landed"
-
-    if (isDisrupted) {
-      outcome = OUTCOME_YES
-    } else if (!isLanded) {
-      // Still airborne or unknown: no final delay yet. Void rather than guess.
-      outcome = OUTCOME_VOID
-    } else {
-      outcome = obs.delayMinutes >= Number(thresholdMinutes) ? OUTCOME_YES : OUTCOME_NO
-    }
+    // Same rule `outcomeFor` applied per source, now over the consensus
+    // result. Kept as one shared function so the per-source agreement check
+    // and the final settlement can never drift apart.
+    outcome = outcomeFor(
+      { delayMinutes: obs.delayMinutes, status: obs.status },
+      Number(thresholdMinutes),
+    )
   } catch (err) {
     // Data unavailable or nodes disagreed -> refund path, never a coin flip.
     runtime.log(`Resolution failed, voiding market ${marketId}: ${err}`)
