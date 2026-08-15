@@ -5,6 +5,9 @@ import {
   logTriggerConfig,
   prepareReportRequest,
   bytesToHex,
+  blockNumber,
+  encodeCallMsg,
+  protoBigIntToBigint,
   TxStatus,
   handler,
   Runner,
@@ -20,7 +23,9 @@ import {
 } from "@chainlink/cre-sdk"
 import {
   decodeEventLog,
+  decodeFunctionResult,
   encodeAbiParameters,
+  encodeFunctionData,
   parseAbiParameters,
   keccak256,
   toEventSelector,
@@ -62,6 +67,10 @@ export type Config = {
    * and the workflow settles flights only.
    */
   cryptoContractAddress?: string
+  /**
+   * StockMarket address. Empty string leaves the stock handler unregistered.
+   */
+  stockContractAddress?: string
   gasLimit: string
 }
 
@@ -105,6 +114,68 @@ const cryptoSettlementRequestedAbi = [
 const CRYPTO_SETTLEMENT_REQUESTED_TOPIC = toEventSelector(
   "SettlementRequested(uint256,uint8,uint64,uint64)",
 )
+
+// Must match StockMarket.sol exactly. It carries closeTime as well as expiry
+// because the workflow has to check the price moved while the market was live.
+const stockSettlementRequestedAbi = [
+  {
+    type: "event",
+    name: "SettlementRequested",
+    inputs: [
+      { name: "marketId", type: "uint256", indexed: true },
+      { name: "feed", type: "address", indexed: false },
+      { name: "strikePrice", type: "uint64", indexed: false },
+      { name: "closeTime", type: "uint64", indexed: false },
+      { name: "expiryTime", type: "uint64", indexed: false },
+      { name: "maxStaleness", type: "uint32", indexed: false },
+    ],
+  },
+] as const
+
+const STOCK_SETTLEMENT_REQUESTED_TOPIC = toEventSelector(
+  "SettlementRequested(uint256,address,uint64,uint64,uint64,uint32)",
+)
+
+/** The AggregatorV3Interface subset this workflow reads. */
+const feedAbi = [
+  {
+    type: "function",
+    name: "latestRoundData",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [
+      { name: "roundId", type: "uint80" },
+      { name: "answer", type: "int256" },
+      { name: "startedAt", type: "uint256" },
+      { name: "updatedAt", type: "uint256" },
+      { name: "answeredInRound", type: "uint80" },
+    ],
+  },
+  {
+    type: "function",
+    name: "getRoundData",
+    stateMutability: "view",
+    inputs: [{ name: "roundId", type: "uint80" }],
+    outputs: [
+      { name: "roundId", type: "uint80" },
+      { name: "answer", type: "int256" },
+      { name: "startedAt", type: "uint256" },
+      { name: "updatedAt", type: "uint256" },
+      { name: "answeredInRound", type: "uint80" },
+    ],
+  },
+] as const
+
+/**
+ * How far back the round walk will go before giving up.
+ *
+ * A daily feed needs one or two steps to reach the round in force at expiry
+ * and a couple more to reach the one at close. The bound exists because
+ * roundIds are phase-encoded: decrementing past the first round of a phase
+ * does not roll into the previous phase, it lands on a round that was never
+ * published. Voiding beats walking into nothing.
+ */
+const MAX_ROUND_WALK = 24
 
 /** Matches CryptoMarket.Asset. */
 const ASSET_SYMBOLS = ["BTC", "ETH"] as const
@@ -729,6 +800,200 @@ export const onCryptoSettlementRequested = (
   return txHash
 }
 
+// --- stock / commodity settlement, from a Chainlink Data Feed ---------------
+
+type FeedRound = { roundId: bigint; answer: bigint; updatedAt: number }
+
+/**
+ * One feed read, pinned to a block.
+ *
+ * The block matters more than the call. Every DON node runs this
+ * independently, so reading at "latest" would give each node whatever head it
+ * happened to see and the report bytes would differ — the same problem that
+ * made spot quotes unusable for the crypto market. Pinning to the block the
+ * settlement request was mined in gives every node one agreed reference point,
+ * taken from the trigger they all received.
+ */
+const readFeedRound = (
+  runtime: Runtime<Config>,
+  evmClient: EVMClient,
+  feed: string,
+  atBlock: bigint,
+  roundId?: bigint,
+): FeedRound => {
+  const data =
+    roundId === undefined
+      ? encodeFunctionData({ abi: feedAbi, functionName: "latestRoundData" })
+      : encodeFunctionData({ abi: feedAbi, functionName: "getRoundData", args: [roundId] })
+
+  const reply = evmClient
+    .callContract(runtime, {
+      call: encodeCallMsg({
+        from: "0x0000000000000000000000000000000000000000",
+        to: feed as `0x${string}`,
+        data,
+      }),
+      blockNumber: blockNumber(atBlock),
+    })
+    .result()
+
+  const decoded = decodeFunctionResult({
+    abi: feedAbi,
+    functionName: roundId === undefined ? "latestRoundData" : "getRoundData",
+    data: bytesToHex(reply.data ?? new Uint8Array()),
+  }) as readonly [bigint, bigint, bigint, bigint, bigint]
+
+  const updatedAt = Number(decoded[3])
+  // A feed answers zero for a round it never published, rather than reverting.
+  if (updatedAt === 0) throw new Error(`Feed round ${roundId ?? "latest"} is unset`)
+
+  return { roundId: decoded[0], answer: decoded[1], updatedAt }
+}
+
+/**
+ * The round that was in force at `target` — the most recent one published at
+ * or before it. Walks back from `from`, so successive lookups going further
+ * into the past can continue from where the last one stopped.
+ */
+const roundInForceAt = (
+  runtime: Runtime<Config>,
+  evmClient: EVMClient,
+  feed: string,
+  atBlock: bigint,
+  from: FeedRound,
+  target: number,
+): FeedRound => {
+  let round = from
+  for (let i = 0; i < MAX_ROUND_WALK; i++) {
+    if (round.updatedAt <= target) return round
+    round = readFeedRound(runtime, evmClient, feed, atBlock, round.roundId - 1n)
+  }
+  throw new Error(`No feed round at or before ${target} within ${MAX_ROUND_WALK} rounds`)
+}
+
+export const onStockSettlementRequested = (
+  runtime: Runtime<Config>,
+  triggerEvent: EVMLog,
+): string => {
+  const decoded = decodeEventLog({
+    abi: stockSettlementRequestedAbi,
+    data: bytesToHex(triggerEvent.data),
+    topics: triggerEvent.topics.map((t) => bytesToHex(t)) as [
+      `0x${string}`,
+      ...`0x${string}`[],
+    ],
+  })
+
+  const { marketId, feed, strikePrice, closeTime, expiryTime, maxStaleness } = decoded.args
+  const strike = BigInt(strikePrice)
+  const expiry = Number(expiryTime)
+  const close = Number(closeTime)
+
+  if (!triggerEvent.blockNumber) {
+    throw new Error("Trigger log carries no block number to pin reads to")
+  }
+  const atBlock = protoBigIntToBigint(triggerEvent.blockNumber)
+
+  runtime.log(
+    `Settling stock market ${marketId}: feed ${feed} vs strike ${strike} at ${expiry}, pinned to block ${atBlock}`,
+  )
+
+  const network = getNetwork({
+    chainFamily: "evm",
+    chainSelectorName: runtime.config.chainSelectorName,
+  })
+  if (!network) {
+    throw new Error(`Unknown chain selector name: ${runtime.config.chainSelectorName}`)
+  }
+  const evmClient = new EVMClient(network.chainSelector.selector)
+
+  let outcome: number
+  let observedPrice = 0n
+  let priceAtClose = 0n
+
+  try {
+    const latest = readFeedRound(runtime, evmClient, feed, atBlock)
+    const atExpiry = roundInForceAt(runtime, evmClient, feed, atBlock, latest, expiry)
+
+    // A feed that stopped publishing keeps answering with its last value, and
+    // that value gets less true every hour. Better to refund than to settle a
+    // market on a price from a day the question was not about.
+    const age = expiry - atExpiry.updatedAt
+    if (age > Number(maxStaleness)) {
+      throw new Error(`Round at expiry is ${age}s old, tolerance is ${maxStaleness}s`)
+    }
+    if (atExpiry.answer <= 0n) {
+      throw new Error(`Feed answered ${atExpiry.answer} at expiry`)
+    }
+
+    const atClose = roundInForceAt(runtime, evmClient, feed, atBlock, atExpiry, close)
+
+    // THE TRADING-CALENDAR CHECK. A feed publishes through the weekend, simply
+    // repeating the last price with a fresh timestamp — measured on CSPX/USD,
+    // the answer changed on every weekday round and not once from Friday to
+    // Saturday. If the price never moved between the book closing and expiry,
+    // the outcome was already fixed when the last stake was placed, and paying
+    // it out would reward whoever noticed the market was over. The chain cannot
+    // know an exchange calendar; it can notice that nothing happened.
+    if (atClose.answer === atExpiry.answer) {
+      throw new Error(
+        `Price did not move between close and expiry (${atExpiry.answer}) — market was already decided`,
+      )
+    }
+
+    observedPrice = atExpiry.answer
+    priceAtClose = atClose.answer
+    outcome = observedPrice >= strike ? OUTCOME_YES : OUTCOME_NO
+  } catch (err) {
+    runtime.log(`Resolution failed, voiding stock market ${marketId}: ${err}`)
+    outcome = OUTCOME_VOID
+    observedPrice = 0n
+  }
+
+  const settledAt = Math.floor(runtime.now().getTime() / 1000)
+  const evidence = JSON.stringify({
+    marketId: marketId.toString(),
+    feed,
+    strikePrice: strike.toString(),
+    closeTime: close,
+    expiryTime: expiry,
+    priceAtClose: priceAtClose.toString(),
+    observedPrice: observedPrice.toString(),
+    outcome,
+    settledAt,
+  })
+  const evidenceHash = keccak256(toHex(evidence))
+
+  runtime.log(
+    `Stock market ${marketId} -> outcome=${outcome} price=${observedPrice} strike=${strike} evidence=${evidenceHash}`,
+  )
+
+  const encoded = encodeAbiParameters(
+    parseAbiParameters(
+      "uint256 marketId, uint8 outcome, int256 observedValue, bytes32 evidenceHash",
+    ),
+    [marketId, outcome, observedPrice, evidenceHash],
+  )
+
+  const signedReport = runtime.report(prepareReportRequest(encoded)).result()
+
+  const txResult = evmClient
+    .writeReport(runtime, {
+      receiver: runtime.config.stockContractAddress ?? "",
+      report: signedReport,
+      gasConfig: { gasLimit: runtime.config.gasLimit },
+    })
+    .result()
+
+  if (txResult.txStatus !== TxStatus.SUCCESS) {
+    throw new Error(`Write failed: ${txResult.errorMessage || txResult.txStatus}`)
+  }
+
+  const txHash = bytesToHex(txResult.txHash ?? new Uint8Array(32))
+  runtime.log(`Settled stock market ${marketId} in tx ${txHash}`)
+  return txHash
+}
+
 export const initWorkflow = (config: Config) => {
   const network = getNetwork({
     chainFamily: "evm",
@@ -769,6 +1034,24 @@ export const initWorkflow = (config: Config) => {
           }),
         ),
         onCryptoSettlementRequested,
+      ),
+    )
+  }
+
+  // The stock market settles from an on-chain feed rather than HTTP, but the
+  // report envelope and the receiver checks are identical, so it is a third
+  // trigger here rather than a third workflow.
+  if (config.stockContractAddress && config.stockContractAddress !== "") {
+    handlers.push(
+      handler(
+        evmClient.logTrigger(
+          logTriggerConfig({
+            addresses: [config.stockContractAddress as `0x${string}`],
+            topics: [[STOCK_SETTLEMENT_REQUESTED_TOPIC]],
+            confidence: "LATEST",
+          }),
+        ),
+        onStockSettlementRequested,
       ),
     )
   }
