@@ -423,6 +423,58 @@ export async function sendMint(account: Address, amount: bigint) {
 // ambiguous now that both contracts number their markets from 0, and sending
 // `stake(3, …)` to the wrong contract would hit a real but unintended market.
 
+/**
+ * The write surface every market contract shares, verified identical across
+ * all three build artifacts.
+ *
+ * Writes use this rather than each contract's full ABI so the address can vary
+ * while the call shape cannot — a union of three full ABIs has no single type
+ * viem can generate a call from, which is what made the old code reach for a
+ * hardcoded branch in the first place. The shared errors are included so a
+ * revert still decodes to a name the UI can explain.
+ */
+const marketWriteAbi = [
+  {
+    type: "function",
+    name: "stake",
+    inputs: [
+      { name: "marketId", type: "uint256" },
+      { name: "isYes", type: "bool" },
+      { name: "amount", type: "uint256" },
+    ],
+    outputs: [],
+    stateMutability: "nonpayable",
+  },
+  {
+    type: "function",
+    name: "claim",
+    inputs: [{ name: "marketId", type: "uint256" }],
+    outputs: [],
+    stateMutability: "nonpayable",
+  },
+  {
+    type: "function",
+    name: "requestSettlement",
+    inputs: [{ name: "marketId", type: "uint256" }],
+    outputs: [],
+    stateMutability: "nonpayable",
+  },
+  { type: "error", name: "BadStatus", inputs: [] },
+  { type: "error", name: "TooEarly", inputs: [] },
+  { type: "error", name: "TooLate", inputs: [] },
+  { type: "error", name: "NothingToClaim", inputs: [] },
+  { type: "error", name: "AlreadyClaimed", inputs: [] },
+  { type: "error", name: "SafeERC20FailedOperation", inputs: [{ name: "token", type: "address" }] },
+] as const;
+
+// Every write routes through `contractFor`. These used to branch on
+// `categoryId === "crypto"` with the flight contract as the else, which was
+// correct for exactly as long as there were two contracts. Adding stocks made
+// the else wrong without making it a type error: a stake on a stock market was
+// sent to FlightMarket with the same numeric id, landing on an unrelated real
+// market — id 0 there is a settled flight, so it reverted with BadStatus and
+// the money never moved. A third category made silent misrouting the default.
+
 export async function sendStake(
   account: Address,
   market: Market,
@@ -430,38 +482,38 @@ export async function sendStake(
   amount: bigint,
 ) {
   const wallet = walletClientFor(account);
-  const args = [BigInt(market.id), isYes, amount] as const;
-  return market.categoryId === "crypto"
-    ? wallet.writeContract({ ...cryptoContract, functionName: "stake", args, chain, account })
-    : wallet.writeContract({ ...marketContract, functionName: "stake", args, chain, account });
+  return wallet.writeContract({
+    address: contractFor(market).address,
+    abi: marketWriteAbi,
+    functionName: "stake",
+    args: [BigInt(market.id), isYes, amount] as const,
+    chain,
+    account,
+  });
 }
 
 export async function sendClaim(account: Address, market: Market) {
   const wallet = walletClientFor(account);
-  const args = [BigInt(market.id)] as const;
-  return market.categoryId === "crypto"
-    ? wallet.writeContract({ ...cryptoContract, functionName: "claim", args, chain, account })
-    : wallet.writeContract({ ...marketContract, functionName: "claim", args, chain, account });
+  return wallet.writeContract({
+    address: contractFor(market).address,
+    abi: marketWriteAbi,
+    functionName: "claim",
+    args: [BigInt(market.id)] as const,
+    chain,
+    account,
+  });
 }
 
 export async function sendRequestSettlement(account: Address, market: Market) {
   const wallet = walletClientFor(account);
-  const args = [BigInt(market.id)] as const;
-  return market.categoryId === "crypto"
-    ? wallet.writeContract({
-        ...cryptoContract,
-        functionName: "requestSettlement",
-        args,
-        chain,
-        account,
-      })
-    : wallet.writeContract({
-        ...marketContract,
-        functionName: "requestSettlement",
-        args,
-        chain,
-        account,
-      });
+  return wallet.writeContract({
+    address: contractFor(market).address,
+    abi: marketWriteAbi,
+    functionName: "requestSettlement",
+    args: [BigInt(market.id)] as const,
+    chain,
+    account,
+  });
 }
 
 export function waitForTx(hash: `0x${string}`) {
