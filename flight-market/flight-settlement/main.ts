@@ -100,6 +100,23 @@ const flightContractSchema = z.object({
 const flightResponseSchema = z.array(flightContractSchema)
 
 /**
+ * AeroDataBox's own timestamp format: "2026-08-14 12:55Z" — space instead of
+ * "T", no seconds. Not RFC 3339, so `Date.parse` on it is implementation
+ * defined: V8 (bun, this file's local tests) accepts it, but the actual
+ * workflow runs in the WASM/QuickJS runtime, which returned NaN for it —
+ * caught by running the real simulator against a live flight, not by local
+ * testing. `Date.UTC` takes numeric components with no string-format
+ * ambiguity, so it can't silently disagree between engines the way parsing
+ * a string can.
+ */
+const parseAeroDataBoxUtc = (s: string): number => {
+  const m = /^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2})Z$/.exec(s)
+  if (!m) throw new Error(`Unrecognized AeroDataBox timestamp: ${s}`)
+  const [, y, mo, d, h, mi] = m
+  return Date.UTC(Number(y), Number(mo) - 1, Number(d), Number(h), Number(mi))
+}
+
+/**
  * Per-node result.
  *
  * CONSENSUS HAZARD: every field here is aggregated across nodes, so anything
@@ -156,8 +173,8 @@ const fetchFlight = (
 
   let delayMinutes = 0
   if (isLanded && flight.arrival?.scheduledTime && flight.arrival?.revisedTime) {
-    const scheduled = Date.parse(flight.arrival.scheduledTime.utc)
-    const actual = Date.parse(flight.arrival.revisedTime.utc)
+    const scheduled = parseAeroDataBoxUtc(flight.arrival.scheduledTime.utc)
+    const actual = parseAeroDataBoxUtc(flight.arrival.revisedTime.utc)
     // Round to whole minutes so independent nodes converge on one value.
     delayMinutes = Math.round((actual - scheduled) / 60_000)
   }
@@ -274,9 +291,18 @@ export const onSettlementRequested = (
   const evmClient = new EVMClient(network.chainSelector.selector)
 
   // Must match onReport's abi.decode: (uint256, uint8, int32, bytes32)
+  //
+  // delayMinutes is passed as a BigInt, not the plain `number` viem's types
+  // declare for int32 — the cast below is deliberate. viem's encoder
+  // range-checks with `value < min` against a bigint bound; in this
+  // workflow's WASM/QuickJS runtime that mixed number-vs-bigint comparison
+  // is simply wrong for negative numbers (confirmed directly against the
+  // real runtime: `-33 < -2147483648n` evaluated to `true` here, though not
+  // in Node/bun) and throws a spurious IntegerOutOfRangeError. Passing a
+  // bigint keeps the comparison same-type on both sides and sidesteps it.
   const encoded = encodeAbiParameters(
     parseAbiParameters("uint256 marketId, uint8 outcome, int32 delayMinutes, bytes32 evidenceHash"),
-    [marketId, outcome, observedDelay, evidenceHash],
+    [marketId, outcome, BigInt(observedDelay) as unknown as number, evidenceHash],
   )
 
   const signedReport = runtime.report(prepareReportRequest(encoded)).result()

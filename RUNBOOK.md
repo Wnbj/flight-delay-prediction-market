@@ -150,15 +150,39 @@ AeroDataBox's `FlightStatus` enum collapses to the three states
 Only `Arrived` computes a real delay; everything short of landing voids
 rather than guessing, same as before.
 
-### Not yet verified
+### Verified against live data — two real bugs found this way
 
-The AeroDataBox call itself has **not** been run against a live key — no key
-was available while building this. Before relying on it:
-run `cre workflow simulate` (no `--broadcast`) against a market created with
-a **real** flight number and a date AeroDataBox actually covers (its free
-tier's historical lookback is limited — check current coverage before
-picking a date), and confirm `fetchFlight` parses a real response rather
-than throwing.
+Tested with `cre workflow simulate` (no `--broadcast`, free) against two real
+British Airways BA286 flights (a real IATA/flight-number, coincidentally
+already used as this repo's placeholder before any of this was live):
+
+| market | flight | AeroDataBox status | result |
+|---|---|---|---|
+| 5 | BA286, 2026-08-13 | `Arrived`, 33 min early | `outcome=2 (No) delay=-33m` |
+| 6 | BA286, 2026-08-14 | `EnRoute` | `outcome=3 (Void) delay=0m` |
+
+Both required fixing bugs that only showed up against real data — the mock
+never exercised either path:
+
+1. **AeroDataBox timestamps aren't RFC 3339** — `"2026-08-14 12:55Z"` (space,
+   no seconds). `Date.parse` on this is implementation-defined: V8 (bun, used
+   for local typechecking) accepts it; the workflow's actual WASM/QuickJS
+   runtime returned `NaN`. Replaced with a small regex parser feeding
+   `Date.UTC`'s numeric-argument form, which has no string-format ambiguity
+   to disagree about.
+2. **A genuine QuickJS runtime bug in mixed `number`/`bigint` comparison for
+   negatives.** Once market 5 fixed #1, encoding the report threw
+   `IntegerOutOfRangeError` for `delayMinutes = -33` on an `int32` field —
+   comfortably in range. Traced into viem's `encodeAbiParameters` and
+   confirmed directly in the real runtime: `-33 < -2147483648n` evaluated to
+   `true`. `delayMinutes` is now passed as a `BigInt` (typed around with a
+   documented cast, since viem's type-level ABI mapping expects `number` for
+   int32) so the comparison is bigint-vs-bigint on both sides.
+
+Both fixes are in `main.ts`, with comments at the fix site pointing back to
+this. **Canceled/Diverted is unverified** — no real cancelled/diverted flight
+was on hand to test against; the branch is unchanged logic from the mock
+version, just fed real data now.
 
 ### Mock gist (kept for deterministic testing)
 
@@ -213,11 +237,13 @@ anvil --fork-url https://ethereum-sepolia-rpc.publicnode.com --port 8545
 - `project.yaml` staging RPC points at `https://ethereum-sepolia-rpc.publicnode.com`
   (real Sepolia). Swap to a local anvil fork URL if rehearsing for free (see
   Appendix).
-- **AeroDataBox is wired in but untested against a live key** — see "Not yet
-  verified" above. The gist mock it replaced no longer matches the response
-  shape `fetchFlight` expects, so deterministic on-demand testing (pick any
-  outcome at will) isn't available until either a real flight with known
-  timing is used, or a shim reviving the mock is built.
+- **AeroDataBox is verified for Yes/No (landed) and Void (in-progress) — not
+  for Canceled/Diverted.** No real cancelled/diverted flight was on hand to
+  test against; see "Verified against live data" above. Also: the gist mock
+  it replaced no longer matches the response shape `fetchFlight` expects, so
+  deterministic on-demand testing (pick any outcome at will) isn't available
+  until either a real flight with known timing is used, or a shim reviving
+  the mock is built.
 - **Single data source.** `ConsensusAggregationByFields` already runs
   per-node, but every node calls the same AeroDataBox endpoint — it protects
   against a dishonest/broken *node*, not a wrong *source*. A second
