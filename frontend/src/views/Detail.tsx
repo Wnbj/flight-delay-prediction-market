@@ -17,6 +17,7 @@ import {
   totalPool,
 } from "../lib/parimutuel";
 import {
+  isPriceMarket,
   MarketStatus,
   Outcome,
   priceAssetLabel,
@@ -28,6 +29,7 @@ import {
 import { Sparkline } from "../components/Sparkline";
 import { Countdown } from "../components/Countdown";
 import { LivePrice } from "../components/LivePrice";
+import { PriceChart } from "../components/PriceChart";
 import { MarketCard } from "../components/MarketCard";
 import { TradePanel } from "../components/TradePanel";
 import type { WalletState } from "../hooks/useWallet";
@@ -172,6 +174,20 @@ export function Detail({
             </div>
           )}
 
+          {isPriceMarket(market) && (
+            <div style={{ marginBottom: "var(--space-4)" }}>
+              <PriceChart market={market} />
+            </div>
+          )}
+
+          {isPriceMarket(market) && (
+            <div
+              className="muted"
+              style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: "0.06em" }}
+            >
+              Implied chance of Yes
+            </div>
+          )}
           <Sparkline market={market} events={stakeEvents} height={160} strokeWidth={1.5} />
 
           {settlement && (
