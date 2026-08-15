@@ -258,21 +258,22 @@ const stockTermsAbi = [
 const STATUS_SETTLEMENT_REQUESTED = 2
 
 /**
- * How far back the sweep looks per contract.
- *
- * Markets are created and settle roughly in order, so anything unresolved is
- * near the end of the list. Scanning every market from zero would make each
- * sweep more expensive forever, for state that stopped changing months ago.
- */
-const SWEEP_WINDOW = 25
-
-/**
- * Ceiling on writes per sweep. A sweep that found twenty stuck markets is a
- * sweep something else has gone wrong around; settling three and coming back
- * in a minute is better than one run holding the workflow open for twenty
+ * Ceiling on writes per sweep. A sweep that found several stuck markets is a
+ * sweep something else has gone wrong around; settling a couple and coming
+ * back next tick beats one run holding the workflow open for a queue of
  * sequential on-chain writes.
  */
-const MAX_SETTLEMENTS_PER_SWEEP = 3
+const MAX_SETTLEMENTS_PER_SWEEP = 2
+
+/**
+ * Chain reads held back for the stock sweep's feed walk.
+ *
+ * Settling a stock market is the only settlement that itself costs chain
+ * reads — one for the latest round, then one per step back to expiry and on
+ * to close. A daily feed usually needs two or three; this leaves room for
+ * more without letting the scan eat the whole allowance.
+ */
+const STOCK_WALK_RESERVE = 6
 
 /** The AggregatorV3Interface subset this workflow reads. */
 const feedAbi = [
@@ -305,15 +306,36 @@ const feedAbi = [
 ] as const
 
 /**
- * How far back the round walk will go before giving up.
+ * Chain reads allowed in ONE workflow execution.
  *
- * A daily feed needs one or two steps to reach the round in force at expiry
- * and a couple more to reach the one at close. The bound exists because
- * roundIds are phase-encoded: decrementing past the first round of a phase
- * does not roll into the previous phase, it lands on a round that was never
- * published. Voiding beats walking into nothing.
+ * Not a number picked for tidiness — it is `ChainRead.CallLimit` from
+ * `cre workflow limits export`, and exceeding it aborts the execution with
+ * LimitExceeded partway through, after any writes already made have landed.
+ * The simulator enforces it too, which is how it was found.
+ *
+ * Every read below therefore draws from an explicit budget rather than
+ * trusting a loop bound to be small enough in practice.
  */
-const MAX_ROUND_WALK = 24
+const CHAIN_READ_LIMIT = 15
+
+/** Remaining chain reads for the current execution. */
+type ReadBudget = { left: number }
+
+const newReadBudget = (reserved = 0): ReadBudget => ({ left: CHAIN_READ_LIMIT - reserved })
+
+/**
+ * How far back the round walk may go.
+ *
+ * Two bounds meet here. The first is correctness: roundIds are phase-encoded,
+ * so decrementing past the first round of a phase does not roll into the
+ * previous phase, it lands on a round that was never published — voiding beats
+ * walking into nothing. The second is the read budget above, and it is the
+ * tighter one. This was 24, which read innocently and was unreachable: a
+ * settlement walks twice (once to expiry, once to close), so the worst case
+ * was 1 + 24 + 24 = 49 reads against a hard limit of 15. The walks now share
+ * one budget instead of each having a private allowance.
+ */
+const MAX_ROUND_WALK = CHAIN_READ_LIMIT
 
 /** Matches CryptoMarket.Asset. */
 const ASSET_SYMBOLS = ["BTC", "ETH"] as const
@@ -1013,14 +1035,26 @@ type FeedRound = { roundId: bigint; answer: bigint; updatedAt: number }
  * settlement request was mined in gives every node one agreed reference point,
  * taken from the trigger they all received.
  */
-/** One `eth_call`, pinned to a block. Shared by every on-chain read below. */
+/**
+ * One `eth_call`, pinned to a block, drawn from the execution's read budget.
+ *
+ * Running out throws here rather than letting the platform abort the execution
+ * mid-flight: the same run ends either way, but this way it ends inside the
+ * `try` that voids the market, with a message saying which market and why.
+ */
 const ethCall = (
   runtime: Runtime<Config>,
   evmClient: EVMClient,
   to: string,
   data: `0x${string}`,
   atBlock: bigint,
+  budget: ReadBudget,
 ): `0x${string}` => {
+  if (budget.left <= 0) {
+    throw new Error(`Out of chain reads (limit ${CHAIN_READ_LIMIT} per execution)`)
+  }
+  budget.left--
+
   const reply = evmClient
     .callContract(runtime, {
       call: encodeCallMsg({
@@ -1040,6 +1074,7 @@ const readFeedRound = (
   evmClient: EVMClient,
   feed: string,
   atBlock: bigint,
+  budget: ReadBudget,
   roundId?: bigint,
 ): FeedRound => {
   const data =
@@ -1050,7 +1085,7 @@ const readFeedRound = (
   const decoded = decodeFunctionResult({
     abi: feedAbi,
     functionName: roundId === undefined ? "latestRoundData" : "getRoundData",
-    data: ethCall(runtime, evmClient, feed, data, atBlock),
+    data: ethCall(runtime, evmClient, feed, data, atBlock, budget),
   }) as readonly [bigint, bigint, bigint, bigint, bigint]
 
   const updatedAt = Number(decoded[3])
@@ -1070,13 +1105,14 @@ const roundInForceAt = (
   evmClient: EVMClient,
   feed: string,
   atBlock: bigint,
+  budget: ReadBudget,
   from: FeedRound,
   target: number,
 ): FeedRound => {
   let round = from
   for (let i = 0; i < MAX_ROUND_WALK; i++) {
     if (round.updatedAt <= target) return round
-    round = readFeedRound(runtime, evmClient, feed, atBlock, round.roundId - 1n)
+    round = readFeedRound(runtime, evmClient, feed, atBlock, budget, round.roundId - 1n)
   }
   throw new Error(`No feed round at or before ${target} within ${MAX_ROUND_WALK} rounds`)
 }
@@ -1096,10 +1132,16 @@ export type StockTerms = {
    * "now" is.
    */
   atBlock: bigint
+  /**
+   * Chain reads this settlement may still spend. The log path arrives with a
+   * fresh execution and nearly the whole allowance; the sweep arrives having
+   * already spent reads scanning for stuck markets.
+   */
+  budget: ReadBudget
 }
 
 const settleStockMarket = (runtime: Runtime<Config>, t: StockTerms): string => {
-  const { marketId, feed, maxStaleness, atBlock } = t
+  const { marketId, feed, maxStaleness, atBlock, budget } = t
   const strike = t.strikePrice
   const expiry = t.expiryTime
   const close = t.closeTime
@@ -1122,8 +1164,8 @@ const settleStockMarket = (runtime: Runtime<Config>, t: StockTerms): string => {
   let priceAtClose = 0n
 
   try {
-    const latest = readFeedRound(runtime, evmClient, feed, atBlock)
-    const atExpiry = roundInForceAt(runtime, evmClient, feed, atBlock, latest, expiry)
+    const latest = readFeedRound(runtime, evmClient, feed, atBlock, budget)
+    const atExpiry = roundInForceAt(runtime, evmClient, feed, atBlock, budget, latest, expiry)
 
     // A feed that stopped publishing keeps answering with its last value, and
     // that value gets less true every hour. Better to refund than to settle a
@@ -1136,7 +1178,7 @@ const settleStockMarket = (runtime: Runtime<Config>, t: StockTerms): string => {
       throw new Error(`Feed answered ${atExpiry.answer} at expiry`)
     }
 
-    const atClose = roundInForceAt(runtime, evmClient, feed, atBlock, atExpiry, close)
+    const atClose = roundInForceAt(runtime, evmClient, feed, atBlock, budget, atExpiry, close)
 
     // THE TRADING-CALENDAR CHECK. A feed publishes through the weekend, simply
     // repeating the last price with a fresh timestamp — measured on CSPX/USD,
@@ -1231,6 +1273,9 @@ export const onStockSettlementRequested = (
     expiryTime: Number(expiryTime),
     maxStaleness: Number(maxStaleness),
     atBlock: protoBigIntToBigint(triggerEvent.blockNumber),
+    // The trigger carries its own block, so this path spends no reads finding
+    // one and gets the whole allowance for the round walk.
+    budget: newReadBudget(),
   })
 }
 
@@ -1267,6 +1312,7 @@ const readMarketCount = (
   evmClient: EVMClient,
   address: string,
   atBlock: bigint,
+  reads: ReadBudget,
 ): number => {
   const decoded = decodeFunctionResult({
     abi: marketCountAbi,
@@ -1277,34 +1323,71 @@ const readMarketCount = (
       address,
       encodeFunctionData({ abi: marketCountAbi, functionName: "marketCount" }),
       atBlock,
+      reads,
     ),
   }) as bigint
 
   return Number(decoded)
 }
 
-/** Ids worth looking at: the newest `SWEEP_WINDOW`, newest first. */
-const idsToScan = (count: number): bigint[] => {
+/**
+ * Ids worth looking at, newest first.
+ *
+ * How far back to go is not a taste decision — it is whatever the read budget
+ * has left after the caller has reserved what it needs for terms and feed
+ * reads. Markets are created and settle roughly in order, so anything
+ * unresolved is near the end of the list anyway.
+ */
+const idsToScan = (count: number, window: number): bigint[] => {
   const ids: bigint[] = []
-  for (let i = count - 1; i >= 0 && ids.length < SWEEP_WINDOW; i--) ids.push(BigInt(i))
+  for (let i = count - 1; i >= 0 && ids.length < window; i--) ids.push(BigInt(i))
   return ids
 }
 
-const sweepFlights = (
+/** The finalized block, and the reads left after paying for it. */
+const finalizedBlock = (
   runtime: Runtime<Config>,
   evmClient: EVMClient,
-  atBlock: bigint,
-  budget: number,
-): number => {
+  reads: ReadBudget,
+): bigint => {
+  if (reads.left <= 0) throw new Error("Out of chain reads before resolving a block")
+  reads.left--
+
+  const header = evmClient
+    .headerByNumber(runtime, { blockNumber: LAST_FINALIZED_BLOCK_NUMBER })
+    .result()
+  if (!header.header?.blockNumber) {
+    throw new Error("Could not resolve the finalized block to pin reads to")
+  }
+  return protoBigIntToBigint(header.header.blockNumber)
+}
+
+const sweepEvm = (runtime: Runtime<Config>) => {
+  const network = getNetwork({
+    chainFamily: "evm",
+    chainSelectorName: runtime.config.chainSelectorName,
+  })
+  if (!network) {
+    throw new Error(`Unknown chain selector name: ${runtime.config.chainSelectorName}`)
+  }
+  return new EVMClient(network.chainSelector.selector)
+}
+
+/**
+ * Flights are the cheapest contract to sweep: `markets` returns lifecycle and
+ * terms in one read, and settlement is an HTTP call, not a chain read. So the
+ * whole remaining budget goes to scanning.
+ */
+export const onSweepFlights = (runtime: Runtime<Config>): string => {
+  const evmClient = sweepEvm(runtime)
+  const reads = newReadBudget()
+  const atBlock = finalizedBlock(runtime, evmClient, reads)
   const address = runtime.config.contractAddress
-  const count = readMarketCount(runtime, evmClient, address, atBlock)
+
+  const count = readMarketCount(runtime, evmClient, address, atBlock, reads)
   let settled = 0
 
-  for (const id of idsToScan(count)) {
-    if (settled >= budget) break
-
-    // FlightMarket predates the shared base, so one read returns lifecycle and
-    // terms together — no second call for terms on this path.
+  for (const id of idsToScan(count, reads.left)) {
     const m = decodeFunctionResult({
       abi: flightMarketsAbi,
       functionName: "markets",
@@ -1314,6 +1397,7 @@ const sweepFlights = (
         address,
         encodeFunctionData({ abi: flightMarketsAbi, functionName: "markets", args: [id] }),
         atBlock,
+        reads,
       ),
     }) as readonly [
       string, string, number, number, bigint, bigint,
@@ -1330,26 +1414,32 @@ const sweepFlights = (
       thresholdMinutes: Number(m[3]),
     })
     settled++
+    if (settled >= MAX_SETTLEMENTS_PER_SWEEP) break
   }
 
-  return settled
+  const summary = settled === 0 ? "nothing stuck" : `settled ${settled}`
+  runtime.log(`Flight sweep at block ${atBlock}: ${summary}`)
+  return summary
 }
 
-const sweepCrypto = (
-  runtime: Runtime<Config>,
-  evmClient: EVMClient,
-  atBlock: bigint,
-  budget: number,
-): number => {
+/**
+ * Crypto costs one extra read per stuck market (`terms`), and settlement
+ * itself is HTTP, so only the terms reads have to be reserved.
+ */
+export const onSweepCrypto = (runtime: Runtime<Config>): string => {
   const address = runtime.config.cryptoContractAddress ?? ""
-  if (address === "") return 0
+  if (address === "") return "no crypto contract configured"
 
-  const count = readMarketCount(runtime, evmClient, address, atBlock)
+  const evmClient = sweepEvm(runtime)
+  const reads = newReadBudget()
+  const atBlock = finalizedBlock(runtime, evmClient, reads)
+
+  const count = readMarketCount(runtime, evmClient, address, atBlock, reads)
   let settled = 0
 
-  for (const id of idsToScan(count)) {
-    if (settled >= budget) break
+  const window = reads.left - MAX_SETTLEMENTS_PER_SWEEP
 
+  for (const id of idsToScan(count, window)) {
     const c = decodeFunctionResult({
       abi: coreAbi,
       functionName: "core",
@@ -1359,6 +1449,7 @@ const sweepCrypto = (
         address,
         encodeFunctionData({ abi: coreAbi, functionName: "core", args: [id] }),
         atBlock,
+        reads,
       ),
     }) as readonly [string, bigint, bigint, number, number, `0x${string}`, bigint, bigint, bigint]
 
@@ -1373,6 +1464,7 @@ const sweepCrypto = (
         address,
         encodeFunctionData({ abi: cryptoTermsAbi, functionName: "terms", args: [id] }),
         atBlock,
+        reads,
       ),
     }) as readonly [number, bigint, bigint]
 
@@ -1384,26 +1476,35 @@ const sweepCrypto = (
       expiryTime: Number(t[2]),
     })
     settled++
+    if (settled >= MAX_SETTLEMENTS_PER_SWEEP) break
   }
 
-  return settled
+  const summary = settled === 0 ? "nothing stuck" : `settled ${settled}`
+  runtime.log(`Crypto sweep at block ${atBlock}: ${summary}`)
+  return summary
 }
 
-const sweepStocks = (
-  runtime: Runtime<Config>,
-  evmClient: EVMClient,
-  atBlock: bigint,
-  budget: number,
-): number => {
+/**
+ * Stocks are the expensive case, and the only one where settling is itself a
+ * chain read: each one walks the feed's rounds back to expiry and again to
+ * close. So the scan window is deliberately small and only ONE market is
+ * settled per run — the walk gets everything left over. A second stuck market
+ * waits for the next tick, which is the right answer for a safety net.
+ */
+export const onSweepStocks = (runtime: Runtime<Config>): string => {
   const address = runtime.config.stockContractAddress ?? ""
-  if (address === "") return 0
+  if (address === "") return "no stock contract configured"
 
-  const count = readMarketCount(runtime, evmClient, address, atBlock)
-  let settled = 0
+  const evmClient = sweepEvm(runtime)
+  const reads = newReadBudget()
+  const atBlock = finalizedBlock(runtime, evmClient, reads)
 
-  for (const id of idsToScan(count)) {
-    if (settled >= budget) break
+  const count = readMarketCount(runtime, evmClient, address, atBlock, reads)
 
+  // Reserve the terms read plus room for a feed walk of a few rounds.
+  const window = Math.max(1, reads.left - 1 - STOCK_WALK_RESERVE)
+
+  for (const id of idsToScan(count, window)) {
     const c = decodeFunctionResult({
       abi: coreAbi,
       functionName: "core",
@@ -1413,6 +1514,7 @@ const sweepStocks = (
         address,
         encodeFunctionData({ abi: coreAbi, functionName: "core", args: [id] }),
         atBlock,
+        reads,
       ),
     }) as readonly [string, bigint, bigint, number, number, `0x${string}`, bigint, bigint, bigint]
 
@@ -1427,6 +1529,7 @@ const sweepStocks = (
         address,
         encodeFunctionData({ abi: stockTermsAbi, functionName: "terms", args: [id] }),
         atBlock,
+        reads,
       ),
     }) as readonly [`0x${string}`, bigint, bigint, number]
 
@@ -1440,41 +1543,14 @@ const sweepStocks = (
       expiryTime: Number(t[2]),
       maxStaleness: Number(t[3]),
       atBlock,
+      budget: reads,
     })
-    settled++
+    runtime.log(`Stock sweep at block ${atBlock}: settled 1`)
+    return "settled 1"
   }
 
-  return settled
-}
-
-export const onSweep = (runtime: Runtime<Config>): string => {
-  const network = getNetwork({
-    chainFamily: "evm",
-    chainSelectorName: runtime.config.chainSelectorName,
-  })
-  if (!network) {
-    throw new Error(`Unknown chain selector name: ${runtime.config.chainSelectorName}`)
-  }
-  const evmClient = new EVMClient(network.chainSelector.selector)
-
-  const header = evmClient
-    .headerByNumber(runtime, { blockNumber: LAST_FINALIZED_BLOCK_NUMBER })
-    .result()
-  if (!header.header?.blockNumber) {
-    throw new Error("Could not resolve the finalized block to pin reads to")
-  }
-  const atBlock = protoBigIntToBigint(header.header.blockNumber)
-
-  runtime.log(`Sweeping for stuck settlements at finalized block ${atBlock}`)
-
-  let settled = 0
-  settled += sweepFlights(runtime, evmClient, atBlock, MAX_SETTLEMENTS_PER_SWEEP - settled)
-  settled += sweepCrypto(runtime, evmClient, atBlock, MAX_SETTLEMENTS_PER_SWEEP - settled)
-  settled += sweepStocks(runtime, evmClient, atBlock, MAX_SETTLEMENTS_PER_SWEEP - settled)
-
-  const summary = settled === 0 ? "nothing stuck" : `settled ${settled}`
-  runtime.log(`Sweep complete at block ${atBlock}: ${summary}`)
-  return summary
+  runtime.log(`Stock sweep at block ${atBlock}: nothing stuck`)
+  return "nothing stuck"
 }
 
 export const initWorkflow = (config: Config) => {
@@ -1542,10 +1618,17 @@ export const initWorkflow = (config: Config) => {
     )
   }
 
-  // The reconciliation sweep. Registered last so its trigger index is stable
-  // as market categories come and go.
+  // The reconciliation sweeps, one per contract and deliberately NOT one
+  // handler doing all three. ChainRead.CallLimit is 15 reads per EXECUTION,
+  // and a single sweep across three contracts blew through it — separate
+  // triggers are separate executions, so each contract gets its own
+  // allowance. Registered last so their indices stay stable as categories
+  // come and go.
   if (config.sweepSchedule && config.sweepSchedule !== "") {
-    handlers.push(handler(new CronCapability().trigger({ schedule: config.sweepSchedule }), onSweep))
+    const cron = new CronCapability()
+    handlers.push(handler(cron.trigger({ schedule: config.sweepSchedule }), onSweepFlights))
+    handlers.push(handler(cron.trigger({ schedule: config.sweepSchedule }), onSweepCrypto))
+    handlers.push(handler(cron.trigger({ schedule: config.sweepSchedule }), onSweepStocks))
   }
 
   return handlers

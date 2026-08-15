@@ -482,7 +482,8 @@ cre workflow simulate ./flight-settlement --target staging-settings --broadcast 
   --trigger-index 2 --evm-tx-hash <hash> --evm-event-index 0 --non-interactive
 ```
 
-`--trigger-index 2` selects the stock handler; 0 is flights, 1 is crypto.
+`--trigger-index 2` selects the stock handler; 0 is flights, 1 is crypto. The
+three cron sweeps are 3 (flights), 4 (crypto) and 5 (stocks).
 
 ### Verified against historical feed rounds
 
@@ -567,6 +568,68 @@ blocks `11497177`–`11497180`, and eight minutes later `finalized` was still at
 `11497135` — 42 blocks short. Re-running the sweep in that window found and
 re-settled the same three markets, and the contract rejected all three. Do not
 judge whether a sweep worked by re-running it; read the contract.
+
+### 15 chain reads per execution — the limit that reshaped this
+
+The first working sweep aborted partway through:
+
+```
+[101]LimitExceeded: capability call limit exceeded for evm.CallContract:
+PerWorkflow.ChainRead.CallLimit ... cannot use 16, limit is 15
+```
+
+`cre workflow limits export` gives the real production numbers, and they are
+worth reading before designing anything that touches the chain:
+
+| limit | value |
+|---|---|
+| `ChainRead.CallLimit` | **15 per execution** |
+| `ChainRead.LogQueryBlockLimit` | 100 blocks |
+| `TriggerSubscriptionLimit` | 10 |
+| `ChainWrite.TargetsLimit` | 10 |
+
+Two things followed from it.
+
+**One sweep became three.** A single handler walking three contracts cannot fit
+in 15 reads. Separate triggers are separate *executions*, so each contract now
+has its own cron handler and its own allowance — flights at trigger index 3,
+crypto at 4, stocks at 5. Six triggers total, against a limit of 10.
+
+**It exposed a bug in code that already worked.** `MAX_ROUND_WALK` was 24, and
+a stock settlement walks the feed twice — once back to expiry, once on to
+close. Worst case `1 + 24 + 24 = 49` reads against a hard limit of 15. Live
+settlements had passed only because real walks were one or two steps. Every
+read now draws from an explicit `ReadBudget` that throws when exhausted, so
+the failure is a voided market with a clear reason rather than a killed
+execution.
+
+Budget per sweep, worst case, all fitting in 15:
+
+| sweep | header | count | scan | terms | feed walk |
+|---|---|---|---|---|---|
+| flights | 1 | 1 | 13 | — | — |
+| crypto | 1 | 1 | 11 | 2 | — |
+| stocks | 1 | 1 | 6 | 1 | 6 |
+
+Stocks settle at most one market per run for this reason; a second waits for
+the next tick, which is the right answer for a safety net.
+
+### Verified: the backlog it cleared
+
+Run against the live contracts, the sweeps found and settled every market that
+had been left stuck across previous sessions:
+
+| market | found by | result |
+|---|---|---|
+| flight 6 | flight sweep | No, landed 6m late |
+| flight 7 | flight sweep | Yes, cancelled |
+| flight 8 | flight sweep | Void, still airborne |
+| flight 5 | flight sweep | No, landed 33m early |
+| crypto 11 | crypto sweep | **Yes**, $63,041.19 vs $63,000 — both sides staked, pays out |
+| crypto 12 | crypto sweep | Yes, $63,080.18 (no stakes, so Void on payout) |
+
+A final pass reported `nothing stuck` on all three contracts, confirmed by
+reading every market's status directly rather than by trusting the log.
 
 ### What it does not fix
 
