@@ -372,11 +372,18 @@ Settled against live venue data:
 | 4  | BTC | 5 min  | $63,000 | — | **Void** — the Coinbase window bug above |
 | 10 | BTC | 5 min  | $63,000 | $63,020.26 | Yes — same path, after the fix |
 | 5  | BTC | 15 min | $63,000 | $63,023.01 | Yes |
+| 6  | BTC | 1 hour | $63,000 | $62,981.00 | No |
 | 7  | ETH | 5 min  | $1,882  | $1,882.40  | Yes |
 | 8  | ETH | 15 min | $1,882  | $1,883.25  | Yes |
+| 9  | ETH | 1 hour | $1,882  | $1,881.13  | No |
 
 Market 10 exists because market 4 died of the Coinbase bug; it re-ran the exact
 5-minute BTC path that failed, and settled.
+
+The slate did the thing it was shaped to do: with one strike per asset held
+across all three horizons, both assets resolved Yes at 5 and 15 minutes and No
+at an hour. Same question, same strike, opposite answer purely from how far out
+it was asked — which is the property a single-horizon slate cannot show.
 
 A strike set *exactly* at spot is the one place venues are most likely to
 straddle the line and void the market — at one sampled minute the three venues
