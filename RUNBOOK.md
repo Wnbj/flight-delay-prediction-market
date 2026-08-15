@@ -414,6 +414,100 @@ via direct `cast call` on-chain state:
 | 1 | No (delay 15)  | 3 (Settled) | 2 |
 | 2 | Void (airborne) | 4 (Void)   | 3 |
 
+## Stock and commodity markets
+
+`StockMarket.sol` — "will CSPX be at or above $X at time T?", settled from a
+**Chainlink Data Feed** instead of exchange APIs. Deployed at
+`0x451bcdB90EC6f6F5f40B5B2578aef641e36b71ca`, same MockUSDC as the others.
+
+### Why a feed here, when the crypto market refuses one
+
+The objection was never feeds, it was cadence. BTC/USD on Sepolia publishes on
+a flat 60-minute heartbeat, so a 5-minute market read from it compares a price
+against itself. CSPX/USD publishes about daily, and an equity market's natural
+horizon is a session. Same instrument, opposite verdict, because the question
+is on a different timescale.
+
+There are **no single-stock feeds on Sepolia** — no AAPL, no TSLA. What exists
+(all verified live before being registered):
+
+| symbol | what it is | heartbeat |
+|---|---|---|
+| CSPX | iShares Core S&P 500 UCITS ETF, USD | ~daily |
+| XAU | gold, USD | hourly |
+| IB01 | iShares $ Treasury Bond 0-1yr ETF, USD | ~daily |
+
+CSPX is the closest honest thing to an equity market there: the S&P 500 in one
+number.
+
+### Reads are pinned to a block
+
+Every DON node runs the workflow independently. Reading `latestRoundData()` at
+"latest" gives each node whichever chain head it happened to see, the report
+bytes differ, and consensus fails — the same problem that ruled out spot quotes
+for crypto. The trigger log carries its own block number, so every node already
+shares one agreed reference point; all feed reads pin to it.
+
+### The trading calendar is the hard part, not the price
+
+A feed keeps publishing when the exchange behind it is shut. It simply repeats
+the last price with a fresh timestamp. Measured on Sepolia:
+
+| feed | observation |
+|---|---|
+| CSPX/USD | answer changed on **every** weekday round; **unchanged** Friday → Saturday |
+| XAU/USD | **4,377.25 for twelve consecutive hourly rounds** across a Saturday |
+
+So a market expiring while the exchange is closed is decided the moment the
+bell rings, and anyone staking afterwards is betting on a known result. The
+chain cannot know an exchange calendar — but it can notice that nothing
+happened. The workflow therefore **voids unless the answer actually changed
+between `closeTime` and `expiryTime`**, which is why `SettlementRequested`
+carries both. It also voids on a round older than the market's own
+`maxStaleness`, which is per market because a daily feed and an hourly one
+cannot share a threshold.
+
+### Feeds are allowlisted
+
+`newMarket` is permissionless. If the feed address came from the caller, anyone
+could create a real-looking market pointing at a contract they control and hand
+themselves the settlement price. The owner registers feeds; callers pick one by
+symbol, and that symbol is what labels the market in the UI.
+
+```bash
+forge script script/DeployStock.s.sol:DeployStock \
+  --rpc-url $SEPOLIA_RPC_URL --broadcast
+# then, once settleAfter passes, requestSettlement and:
+cre workflow simulate ./flight-settlement --target staging-settings --broadcast \
+  --trigger-index 2 --evm-tx-hash <hash> --evm-event-index 0 --non-interactive
+```
+
+`--trigger-index 2` selects the stock handler; 0 is flights, 1 is crypto.
+
+### Verified against historical feed rounds
+
+`newMarket` does not require future timestamps, which makes a backtest possible:
+create a market whose close and expiry are already in the past and it is
+settleable immediately, against feed rounds that really happened. Staking
+reverts with `TooLate`, so the book stays empty and the contract voids on
+payout grounds — but `outcome` and `observedValue` are still written, which is
+exactly the part being tested. Far better than waiting an hour to discover the
+round walk was wrong.
+
+Market 2, close `1786814870`, expiry `1786818470`, strike $62,000:
+
+| what | value |
+|---|---|
+| pinned block | 11496208 (the settlement-request block) |
+| round in force at close | 16:46:24 → `6302552471078` |
+| round in force at expiry | 17:46:48 → `6299976883013` |
+| moved between the two? | yes, so not voided |
+| on chain | `outcome=1 (Yes)`, `observedValue=6299976883013` |
+
+The observed value matches the 17:46:48 round exactly — the last one published
+at or before expiry — confirming the walk landed on the right round rather than
+on `latest`.
+
 ## Appendix: free local rehearsal via anvil fork
 
 Before spending real Sepolia ETH, the same flow can run against a local anvil
