@@ -1,5 +1,5 @@
 import { useNow } from "../hooks/useNow";
-import { MarketStatus, type Market } from "../lib/types";
+import { isPriceMarket, MarketStatus, type Market } from "../lib/types";
 
 /**
  * A market moves through three deadlines, and which one matters depends on
@@ -10,7 +10,13 @@ import { MarketStatus, type Market } from "../lib/types";
 function phase(market: Market, now: number): { label: string; target: number } | null {
   if (market.status !== MarketStatus.Open) return null;
 
-  const resolveAt = market.categoryId === "crypto" ? market.expiryTime : market.settleAfter;
+  // Every price market has an expiry — the moment its answer is fixed — that
+  // comes well before settlement is even permitted. Counting down to
+  // settleAfter would tell a trader the question is still open for another
+  // half hour after it has actually been decided. Flights have no such moment:
+  // the flight lands when it lands, and settleAfter is the first honest
+  // deadline there is.
+  const resolveAt = isPriceMarket(market) ? market.expiryTime : market.settleAfter;
 
   if (now < market.closeTime) return { label: "Trading closes in", target: market.closeTime };
   if (now < resolveAt) return { label: "Resolves in", target: resolveAt };
