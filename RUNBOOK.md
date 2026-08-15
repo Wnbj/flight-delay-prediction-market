@@ -562,6 +562,12 @@ now every 30 minutes, comfortably above the measured 17. Going faster would
 mean reading unfinalized state, trading determinism for latency — the wrong
 trade for a safety net, when the log trigger is already the fast path.
 
+Measured concretely on the run that exposed this: the settlements landed in
+blocks `11497177`–`11497180`, and eight minutes later `finalized` was still at
+`11497135` — 42 blocks short. Re-running the sweep in that window found and
+re-settled the same three markets, and the contract rejected all three. Do not
+judge whether a sweep worked by re-running it; read the contract.
+
 ### What it does not fix
 
 The sweep removes the human from *running the workflow*. It does not remove the
@@ -573,6 +579,36 @@ autonomy needs `_processReport` to accept a report for any market past
 `requestSettlement` exists only to give a log trigger something to listen to,
 and adds nothing to authorisation, which is already forwarder + author +
 workflow name.
+
+## Secrets: the API key is currently in the clear
+
+`config.staging.json` carries the RapidAPI key as plaintext. That file is
+gitignored, but the config is **handed to the DON**, so every node operator
+running this workflow can read the key. Fine for a POC on a free tier; not
+fine for anything with a bill attached.
+
+The SDK has the fix: `runtime.getSecret({ id, namespace })` resolves a value
+from the Vault DON, so it never appears in config. `resolveApiKey` in `main.ts`
+uses it when `apiKeySecretId` is set and falls back to `apiKey` otherwise, so
+the existing verified path is untouched until the secret exists.
+
+**It has not been exercised, and activating it is not free.** `cre secrets list`
+fails with:
+
+```
+failed to create workflow registry client: failed to create client for chain
+"ethereum-mainnet": rpc url not found for chain ethereum-mainnet
+```
+
+The workflow/secrets registry lives on **Ethereum mainnet**. Using it needs a
+mainnet RPC in `project.yaml`, and `cre secrets create` is a real mainnet
+transaction that uploads the key to the Vault DON — real gas, and a credential
+leaving this machine. Both are decisions for the account owner, so the code
+path is in place and the upload is deliberately not done.
+
+A further step after that is the **confidential HTTP** capability
+(`networking/confidentialhttp`), which templates the secret into the request on
+the node rather than passing it through workflow memory as a string.
 
 ## Appendix: free local rehearsal via anvil fork
 

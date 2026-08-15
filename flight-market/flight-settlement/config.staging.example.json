@@ -7,5 +7,7 @@
   "secondaryUrl": "",
   "cryptoContractAddress": "0x8DA11eb17D5F3f4427aA3017E95e50b132A210be",
   "stockContractAddress": "0x0000000000000000000000000000000000000000",
-  "sweepSchedule": "0 0,30 * * * *"
+  "sweepSchedule": "0 0,30 * * * *",
+  "apiKeySecretId": "",
+  "apiKeySecretNamespace": "main"
 }

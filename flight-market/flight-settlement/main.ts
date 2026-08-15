@@ -51,7 +51,26 @@ export type Config = {
   contractAddress: string
   chainSelectorName: string
   apiUrl: string          // AeroDataBox base URL, e.g. https://aerodatabox.p.rapidapi.com
-  apiKey: string          // RapidAPI key for AeroDataBox — never committed, see config.staging.example.json
+  /**
+   * RapidAPI key for AeroDataBox, in the clear.
+   *
+   * This is the weak link in the current setup, and naming it here is the
+   * point: workflow config is handed to the DON, so every node operator
+   * running this workflow can read the key. It is fine for a POC on a free
+   * tier and would not be fine for anything else. Prefer `apiKeySecretId`.
+   */
+  apiKey: string
+  /**
+   * Vault DON secret holding the same key. When set, it wins over `apiKey`
+   * and the key never appears in config at all.
+   *
+   * Not yet exercised: the secrets registry lives on Ethereum MAINNET, so
+   * using it needs a mainnet RPC in project.yaml and `cre secrets create`,
+   * which is a real mainnet transaction. See RUNBOOK.
+   */
+  apiKeySecretId?: string
+  /** Namespace for the secret above. Defaults to "main". */
+  apiKeySecretNamespace?: string
   /**
    * Optional second, independent provider. Empty string disables it and the
    * workflow runs single-source.
@@ -696,6 +715,27 @@ export type FlightTerms = {
   thresholdMinutes: number
 }
 
+/**
+ * The provider key, from the Vault DON when one is configured and from plain
+ * config otherwise.
+ *
+ * Resolved here in the handler rather than inside `fetchFlight`, because that
+ * function runs under the HTTP capability's consensus wrapper on every node
+ * and secrets are fetched through the runtime, not from inside a request
+ * builder. It is passed down as an ordinary argument, exactly as the config
+ * value already was — so the switch changes where the key comes from and
+ * nothing about how it is used.
+ */
+const resolveApiKey = (runtime: Runtime<Config>): string => {
+  const id = runtime.config.apiKeySecretId
+  if (!id || id === "") return runtime.config.apiKey
+
+  const secret = runtime
+    .getSecret({ id, namespace: runtime.config.apiKeySecretNamespace ?? "main" })
+    .result()
+  return secret.value
+}
+
 const settleFlightMarket = (runtime: Runtime<Config>, t: FlightTerms): string => {
   const { marketId, flightIata, departureDate, thresholdMinutes } = t
   runtime.log(
@@ -722,7 +762,7 @@ const settleFlightMarket = (runtime: Runtime<Config>, t: FlightTerms): string =>
     const obs = httpClient
       .sendRequest(runtime, fetchFlight, aggregation)(
         runtime.config.apiUrl,
-        runtime.config.apiKey,
+        resolveApiKey(runtime),
         runtime.config.secondaryUrl ?? "",
         flightIata,
         departureDateIso,
