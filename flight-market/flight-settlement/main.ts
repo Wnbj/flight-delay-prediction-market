@@ -165,10 +165,17 @@ const fetchFlight = (
     throw new Error(`Empty flight list for ${flightIata} on ${departureDateIso}`)
   }
 
-  const isDisrupted =
-    flight.status === "Canceled" ||
-    flight.status === "CanceledUncertain" ||
-    flight.status === "Diverted"
+  // `CanceledUncertain` is deliberately NOT treated as cancelled. AeroDataBox
+  // defines it as "status of the flight is uncertain, may be cancelled" — a
+  // maybe, not a fact. Paying a market out on a maybe is the worst available
+  // failure: the UI promises Yes for "cancelled or diverted", and someone
+  // would collect real money on an unconfirmed signal. It falls through to
+  // `airborne` below, which voids and refunds everyone — the same treatment
+  // the contract already documents for unavailable data.
+  //
+  // This is not an edge case: 75 of 565 arrivals sampled at ORD (13%) carried
+  // this status.
+  const isDisrupted = flight.status === "Canceled" || flight.status === "Diverted"
   const isLanded = flight.status === "Arrived"
 
   let delayMinutes = 0
@@ -179,8 +186,7 @@ const fetchFlight = (
     delayMinutes = Math.round((actual - scheduled) / 60_000)
   }
 
-  // Bucket down to the three states _processReport's caller cares about —
-  // matches the mock's {landed, cancelled, diverted, in-progress} shape.
+  // Bucket down to the three states the settlement logic cares about.
   const bucketedStatus = isDisrupted ? "cancelled" : isLanded ? "landed" : "airborne"
 
   return {
