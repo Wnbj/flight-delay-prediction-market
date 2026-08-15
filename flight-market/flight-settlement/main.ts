@@ -8,6 +8,8 @@ import {
   blockNumber,
   encodeCallMsg,
   protoBigIntToBigint,
+  CronCapability,
+  LAST_FINALIZED_BLOCK_NUMBER,
   TxStatus,
   handler,
   Runner,
@@ -20,6 +22,7 @@ import {
   type Runtime,
   type HTTPSendRequester,
   type EVMLog,
+  type Workflow,
 } from "@chainlink/cre-sdk"
 import {
   decodeEventLog,
@@ -71,6 +74,14 @@ export type Config = {
    * StockMarket address. Empty string leaves the stock handler unregistered.
    */
   stockContractAddress?: string
+  /**
+   * Cron schedule for the reconciliation sweep, in six-field cron form
+   * (seconds first). Empty string leaves the sweep unregistered and the
+   * workflow purely log-driven. See config.staging.example.json for a
+   * five-minute schedule — the literal cannot go in this comment, because a
+   * cron step contains the character pair that would close it.
+   */
+  sweepSchedule?: string
   gasLimit: string
 }
 
@@ -135,6 +146,114 @@ const stockSettlementRequestedAbi = [
 const STOCK_SETTLEMENT_REQUESTED_TOPIC = toEventSelector(
   "SettlementRequested(uint256,address,uint64,uint64,uint64,uint32)",
 )
+
+// --- market-state ABI, for the cron sweep -----------------------------------
+// Only the reads the sweep needs. Shapes taken from the build artifacts, not
+// written from memory: FlightMarket predates the shared base and exposes its
+// whole market as one `markets` tuple, while the two newer contracts split
+// lifecycle (`core`, from ParimutuelMarket) from question terms (`terms`).
+
+const marketCountAbi = [
+  {
+    type: "function",
+    name: "marketCount",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+] as const
+
+const flightMarketsAbi = [
+  {
+    type: "function",
+    name: "markets",
+    stateMutability: "view",
+    inputs: [{ name: "", type: "uint256" }],
+    outputs: [
+      { name: "question", type: "string" },
+      { name: "flightIata", type: "string" },
+      { name: "departureDate", type: "uint32" },
+      { name: "thresholdMinutes", type: "uint16" },
+      { name: "closeTime", type: "uint64" },
+      { name: "settleAfter", type: "uint64" },
+      { name: "status", type: "uint8" },
+      { name: "outcome", type: "uint8" },
+      { name: "evidenceHash", type: "bytes32" },
+      { name: "observedDelay", type: "int32" },
+      { name: "yesPool", type: "uint256" },
+      { name: "noPool", type: "uint256" },
+    ],
+  },
+] as const
+
+const coreAbi = [
+  {
+    type: "function",
+    name: "core",
+    stateMutability: "view",
+    inputs: [{ name: "", type: "uint256" }],
+    outputs: [
+      { name: "question", type: "string" },
+      { name: "closeTime", type: "uint64" },
+      { name: "settleAfter", type: "uint64" },
+      { name: "status", type: "uint8" },
+      { name: "outcome", type: "uint8" },
+      { name: "evidenceHash", type: "bytes32" },
+      { name: "observedValue", type: "int256" },
+      { name: "yesPool", type: "uint256" },
+      { name: "noPool", type: "uint256" },
+    ],
+  },
+] as const
+
+const cryptoTermsAbi = [
+  {
+    type: "function",
+    name: "terms",
+    stateMutability: "view",
+    inputs: [{ name: "", type: "uint256" }],
+    outputs: [
+      { name: "asset", type: "uint8" },
+      { name: "strikePrice", type: "uint64" },
+      { name: "expiryTime", type: "uint64" },
+    ],
+  },
+] as const
+
+const stockTermsAbi = [
+  {
+    type: "function",
+    name: "terms",
+    stateMutability: "view",
+    inputs: [{ name: "", type: "uint256" }],
+    outputs: [
+      { name: "feed", type: "address" },
+      { name: "strikePrice", type: "uint64" },
+      { name: "expiryTime", type: "uint64" },
+      { name: "maxStaleness", type: "uint32" },
+    ],
+  },
+] as const
+
+/** ParimutuelMarket.Status.SettlementRequested — the state the sweep acts on. */
+const STATUS_SETTLEMENT_REQUESTED = 2
+
+/**
+ * How far back the sweep looks per contract.
+ *
+ * Markets are created and settle roughly in order, so anything unresolved is
+ * near the end of the list. Scanning every market from zero would make each
+ * sweep more expensive forever, for state that stopped changing months ago.
+ */
+const SWEEP_WINDOW = 25
+
+/**
+ * Ceiling on writes per sweep. A sweep that found twenty stuck markets is a
+ * sweep something else has gone wrong around; settling three and coming back
+ * in a minute is better than one run holding the workflow open for twenty
+ * sequential on-chain writes.
+ */
+const MAX_SETTLEMENTS_PER_SWEEP = 3
 
 /** The AggregatorV3Interface subset this workflow reads. */
 const feedAbi = [
@@ -563,22 +682,22 @@ const fetchCryptoPrice = (
   return { delayMinutes: medianPrice, status: "priced", fetchedAt: 0 }
 }
 
-export const onSettlementRequested = (
-  runtime: Runtime<Config>,
-  triggerEvent: EVMLog,
-): string => {
-  // --- decode the event ---
-  // Log carries raw protobuf bytes (Uint8Array), so hex-encode before viem sees it.
-  const decoded = decodeEventLog({
-    abi: settlementRequestedAbi,
-    data: bytesToHex(triggerEvent.data),
-    topics: triggerEvent.topics.map((t) => bytesToHex(t)) as [
-      `0x${string}`,
-      ...`0x${string}`[],
-    ],
-  })
+/**
+ * Terms of one flight market, however they were obtained.
+ *
+ * The log trigger reads them out of the event; the cron sweep reads them off
+ * chain. Both then settle through exactly the same code, so a market settled
+ * by the sweep can never resolve differently from one settled by the trigger.
+ */
+export type FlightTerms = {
+  marketId: bigint
+  flightIata: string
+  departureDate: number
+  thresholdMinutes: number
+}
 
-  const { marketId, flightIata, departureDate, thresholdMinutes } = decoded.args
+const settleFlightMarket = (runtime: Runtime<Config>, t: FlightTerms): string => {
+  const { marketId, flightIata, departureDate, thresholdMinutes } = t
   runtime.log(
     `Settling market ${marketId}: ${flightIata} on ${departureDate}, threshold ${thresholdMinutes}m`,
   )
@@ -695,12 +814,13 @@ export const onSettlementRequested = (
   return txHash
 }
 
-export const onCryptoSettlementRequested = (
+export const onSettlementRequested = (
   runtime: Runtime<Config>,
   triggerEvent: EVMLog,
 ): string => {
+  // Log carries raw protobuf bytes (Uint8Array), so hex-encode before viem sees it.
   const decoded = decodeEventLog({
-    abi: cryptoSettlementRequestedAbi,
+    abi: settlementRequestedAbi,
     data: bytesToHex(triggerEvent.data),
     topics: triggerEvent.topics.map((t) => bytesToHex(t)) as [
       `0x${string}`,
@@ -708,7 +828,24 @@ export const onCryptoSettlementRequested = (
     ],
   })
 
-  const { marketId, asset, strikePrice, expiryTime } = decoded.args
+  const { marketId, flightIata, departureDate, thresholdMinutes } = decoded.args
+  return settleFlightMarket(runtime, {
+    marketId,
+    flightIata,
+    departureDate: Number(departureDate),
+    thresholdMinutes: Number(thresholdMinutes),
+  })
+}
+
+export type CryptoTerms = {
+  marketId: bigint
+  asset: number
+  strikePrice: bigint
+  expiryTime: number
+}
+
+const settleCryptoMarket = (runtime: Runtime<Config>, t: CryptoTerms): string => {
+  const { marketId, asset, strikePrice, expiryTime } = t
   const symbol = ASSET_SYMBOLS[Number(asset)]
   if (!symbol) throw new Error(`Unknown asset index ${asset}`)
 
@@ -800,6 +937,28 @@ export const onCryptoSettlementRequested = (
   return txHash
 }
 
+export const onCryptoSettlementRequested = (
+  runtime: Runtime<Config>,
+  triggerEvent: EVMLog,
+): string => {
+  const decoded = decodeEventLog({
+    abi: cryptoSettlementRequestedAbi,
+    data: bytesToHex(triggerEvent.data),
+    topics: triggerEvent.topics.map((t) => bytesToHex(t)) as [
+      `0x${string}`,
+      ...`0x${string}`[],
+    ],
+  })
+
+  const { marketId, asset, strikePrice, expiryTime } = decoded.args
+  return settleCryptoMarket(runtime, {
+    marketId,
+    asset: Number(asset),
+    strikePrice: BigInt(strikePrice),
+    expiryTime: Number(expiryTime),
+  })
+}
+
 // --- stock / commodity settlement, from a Chainlink Data Feed ---------------
 
 type FeedRound = { roundId: bigint; answer: bigint; updatedAt: number }
@@ -814,6 +973,28 @@ type FeedRound = { roundId: bigint; answer: bigint; updatedAt: number }
  * settlement request was mined in gives every node one agreed reference point,
  * taken from the trigger they all received.
  */
+/** One `eth_call`, pinned to a block. Shared by every on-chain read below. */
+const ethCall = (
+  runtime: Runtime<Config>,
+  evmClient: EVMClient,
+  to: string,
+  data: `0x${string}`,
+  atBlock: bigint,
+): `0x${string}` => {
+  const reply = evmClient
+    .callContract(runtime, {
+      call: encodeCallMsg({
+        from: "0x0000000000000000000000000000000000000000",
+        to: to as `0x${string}`,
+        data,
+      }),
+      blockNumber: blockNumber(atBlock),
+    })
+    .result()
+
+  return bytesToHex(reply.data ?? new Uint8Array())
+}
+
 const readFeedRound = (
   runtime: Runtime<Config>,
   evmClient: EVMClient,
@@ -826,21 +1007,10 @@ const readFeedRound = (
       ? encodeFunctionData({ abi: feedAbi, functionName: "latestRoundData" })
       : encodeFunctionData({ abi: feedAbi, functionName: "getRoundData", args: [roundId] })
 
-  const reply = evmClient
-    .callContract(runtime, {
-      call: encodeCallMsg({
-        from: "0x0000000000000000000000000000000000000000",
-        to: feed as `0x${string}`,
-        data,
-      }),
-      blockNumber: blockNumber(atBlock),
-    })
-    .result()
-
   const decoded = decodeFunctionResult({
     abi: feedAbi,
     functionName: roundId === undefined ? "latestRoundData" : "getRoundData",
-    data: bytesToHex(reply.data ?? new Uint8Array()),
+    data: ethCall(runtime, evmClient, feed, data, atBlock),
   }) as readonly [bigint, bigint, bigint, bigint, bigint]
 
   const updatedAt = Number(decoded[3])
@@ -871,28 +1041,28 @@ const roundInForceAt = (
   throw new Error(`No feed round at or before ${target} within ${MAX_ROUND_WALK} rounds`)
 }
 
-export const onStockSettlementRequested = (
-  runtime: Runtime<Config>,
-  triggerEvent: EVMLog,
-): string => {
-  const decoded = decodeEventLog({
-    abi: stockSettlementRequestedAbi,
-    data: bytesToHex(triggerEvent.data),
-    topics: triggerEvent.topics.map((t) => bytesToHex(t)) as [
-      `0x${string}`,
-      ...`0x${string}`[],
-    ],
-  })
+export type StockTerms = {
+  marketId: bigint
+  feed: string
+  strikePrice: bigint
+  closeTime: number
+  expiryTime: number
+  maxStaleness: number
+  /**
+   * The block every feed read is pinned to. Supplied by the caller because the
+   * two paths derive it differently: the log trigger uses the block its own
+   * event was mined in, the cron sweep uses the last finalized block. Both are
+   * values every DON node agrees on without having to ask the chain what
+   * "now" is.
+   */
+  atBlock: bigint
+}
 
-  const { marketId, feed, strikePrice, closeTime, expiryTime, maxStaleness } = decoded.args
-  const strike = BigInt(strikePrice)
-  const expiry = Number(expiryTime)
-  const close = Number(closeTime)
-
-  if (!triggerEvent.blockNumber) {
-    throw new Error("Trigger log carries no block number to pin reads to")
-  }
-  const atBlock = protoBigIntToBigint(triggerEvent.blockNumber)
+const settleStockMarket = (runtime: Runtime<Config>, t: StockTerms): string => {
+  const { marketId, feed, maxStaleness, atBlock } = t
+  const strike = t.strikePrice
+  const expiry = t.expiryTime
+  const close = t.closeTime
 
   runtime.log(
     `Settling stock market ${marketId}: feed ${feed} vs strike ${strike} at ${expiry}, pinned to block ${atBlock}`,
@@ -994,6 +1164,279 @@ export const onStockSettlementRequested = (
   return txHash
 }
 
+export const onStockSettlementRequested = (
+  runtime: Runtime<Config>,
+  triggerEvent: EVMLog,
+): string => {
+  const decoded = decodeEventLog({
+    abi: stockSettlementRequestedAbi,
+    data: bytesToHex(triggerEvent.data),
+    topics: triggerEvent.topics.map((t) => bytesToHex(t)) as [
+      `0x${string}`,
+      ...`0x${string}`[],
+    ],
+  })
+
+  const { marketId, feed, strikePrice, closeTime, expiryTime, maxStaleness } = decoded.args
+
+  if (!triggerEvent.blockNumber) {
+    throw new Error("Trigger log carries no block number to pin reads to")
+  }
+
+  return settleStockMarket(runtime, {
+    marketId,
+    feed,
+    strikePrice: BigInt(strikePrice),
+    closeTime: Number(closeTime),
+    expiryTime: Number(expiryTime),
+    maxStaleness: Number(maxStaleness),
+    atBlock: protoBigIntToBigint(triggerEvent.blockNumber),
+  })
+}
+
+// --- cron sweep: settle what the log trigger missed --------------------------
+//
+// The log-trigger design has a hole in it that has nothing to do with the code:
+// it needs someone to emit the log. Every settlement in this project so far
+// began with a human calling requestSettlement() and, without deploy access,
+// a human running the simulator. A market whose event was emitted while the
+// workflow was down, or whose settlement reverted, simply stays stuck — there
+// is no second log coming.
+//
+// This sweep is the reconciliation pass. It reads the contracts directly and
+// settles anything sitting in SettlementRequested, so the log trigger becomes
+// the fast path rather than the only path.
+//
+// Reads are pinned to the LAST FINALIZED block. A cron tick has no log to take
+// a block from, and "latest" would hand every DON node a different chain head,
+// so the report bytes would differ and consensus would fail. Finalized state
+// is the one view of the chain that nodes converge on without coordinating.
+//
+// That choice sets the schedule, and getting it wrong is not free. Finalized
+// state lags — measured on Sepolia at 17 minutes, 86 blocks — so a sweep still
+// sees a market it settled minutes ago as stuck, and settles it again. The
+// contract rejects the duplicate (ReportProcessed = false, observed), so
+// nothing corrupts, but each retry burns a transaction. THE SWEEP PERIOD MUST
+// THEREFORE EXCEED THE CHAIN'S FINALITY LAG. At five minutes this cost three
+// wasted writes per market; the schedule in config is set well above the
+// measured lag. A faster sweep would need to read unfinalized state, which
+// costs determinism — the wrong thing to trade for a safety net.
+
+const readMarketCount = (
+  runtime: Runtime<Config>,
+  evmClient: EVMClient,
+  address: string,
+  atBlock: bigint,
+): number => {
+  const decoded = decodeFunctionResult({
+    abi: marketCountAbi,
+    functionName: "marketCount",
+    data: ethCall(
+      runtime,
+      evmClient,
+      address,
+      encodeFunctionData({ abi: marketCountAbi, functionName: "marketCount" }),
+      atBlock,
+    ),
+  }) as bigint
+
+  return Number(decoded)
+}
+
+/** Ids worth looking at: the newest `SWEEP_WINDOW`, newest first. */
+const idsToScan = (count: number): bigint[] => {
+  const ids: bigint[] = []
+  for (let i = count - 1; i >= 0 && ids.length < SWEEP_WINDOW; i--) ids.push(BigInt(i))
+  return ids
+}
+
+const sweepFlights = (
+  runtime: Runtime<Config>,
+  evmClient: EVMClient,
+  atBlock: bigint,
+  budget: number,
+): number => {
+  const address = runtime.config.contractAddress
+  const count = readMarketCount(runtime, evmClient, address, atBlock)
+  let settled = 0
+
+  for (const id of idsToScan(count)) {
+    if (settled >= budget) break
+
+    // FlightMarket predates the shared base, so one read returns lifecycle and
+    // terms together — no second call for terms on this path.
+    const m = decodeFunctionResult({
+      abi: flightMarketsAbi,
+      functionName: "markets",
+      data: ethCall(
+        runtime,
+        evmClient,
+        address,
+        encodeFunctionData({ abi: flightMarketsAbi, functionName: "markets", args: [id] }),
+        atBlock,
+      ),
+    }) as readonly [
+      string, string, number, number, bigint, bigint,
+      number, number, `0x${string}`, number, bigint, bigint,
+    ]
+
+    if (Number(m[6]) !== STATUS_SETTLEMENT_REQUESTED) continue
+
+    runtime.log(`Sweep found stuck flight market ${id}`)
+    settleFlightMarket(runtime, {
+      marketId: id,
+      flightIata: m[1],
+      departureDate: Number(m[2]),
+      thresholdMinutes: Number(m[3]),
+    })
+    settled++
+  }
+
+  return settled
+}
+
+const sweepCrypto = (
+  runtime: Runtime<Config>,
+  evmClient: EVMClient,
+  atBlock: bigint,
+  budget: number,
+): number => {
+  const address = runtime.config.cryptoContractAddress ?? ""
+  if (address === "") return 0
+
+  const count = readMarketCount(runtime, evmClient, address, atBlock)
+  let settled = 0
+
+  for (const id of idsToScan(count)) {
+    if (settled >= budget) break
+
+    const c = decodeFunctionResult({
+      abi: coreAbi,
+      functionName: "core",
+      data: ethCall(
+        runtime,
+        evmClient,
+        address,
+        encodeFunctionData({ abi: coreAbi, functionName: "core", args: [id] }),
+        atBlock,
+      ),
+    }) as readonly [string, bigint, bigint, number, number, `0x${string}`, bigint, bigint, bigint]
+
+    if (Number(c[3]) !== STATUS_SETTLEMENT_REQUESTED) continue
+
+    const t = decodeFunctionResult({
+      abi: cryptoTermsAbi,
+      functionName: "terms",
+      data: ethCall(
+        runtime,
+        evmClient,
+        address,
+        encodeFunctionData({ abi: cryptoTermsAbi, functionName: "terms", args: [id] }),
+        atBlock,
+      ),
+    }) as readonly [number, bigint, bigint]
+
+    runtime.log(`Sweep found stuck crypto market ${id}`)
+    settleCryptoMarket(runtime, {
+      marketId: id,
+      asset: Number(t[0]),
+      strikePrice: BigInt(t[1]),
+      expiryTime: Number(t[2]),
+    })
+    settled++
+  }
+
+  return settled
+}
+
+const sweepStocks = (
+  runtime: Runtime<Config>,
+  evmClient: EVMClient,
+  atBlock: bigint,
+  budget: number,
+): number => {
+  const address = runtime.config.stockContractAddress ?? ""
+  if (address === "") return 0
+
+  const count = readMarketCount(runtime, evmClient, address, atBlock)
+  let settled = 0
+
+  for (const id of idsToScan(count)) {
+    if (settled >= budget) break
+
+    const c = decodeFunctionResult({
+      abi: coreAbi,
+      functionName: "core",
+      data: ethCall(
+        runtime,
+        evmClient,
+        address,
+        encodeFunctionData({ abi: coreAbi, functionName: "core", args: [id] }),
+        atBlock,
+      ),
+    }) as readonly [string, bigint, bigint, number, number, `0x${string}`, bigint, bigint, bigint]
+
+    if (Number(c[3]) !== STATUS_SETTLEMENT_REQUESTED) continue
+
+    const t = decodeFunctionResult({
+      abi: stockTermsAbi,
+      functionName: "terms",
+      data: ethCall(
+        runtime,
+        evmClient,
+        address,
+        encodeFunctionData({ abi: stockTermsAbi, functionName: "terms", args: [id] }),
+        atBlock,
+      ),
+    }) as readonly [`0x${string}`, bigint, bigint, number]
+
+    runtime.log(`Sweep found stuck stock market ${id}`)
+    settleStockMarket(runtime, {
+      marketId: id,
+      feed: t[0],
+      strikePrice: BigInt(t[1]),
+      // closeTime lives on the shared base, not in this contract's own terms.
+      closeTime: Number(c[1]),
+      expiryTime: Number(t[2]),
+      maxStaleness: Number(t[3]),
+      atBlock,
+    })
+    settled++
+  }
+
+  return settled
+}
+
+export const onSweep = (runtime: Runtime<Config>): string => {
+  const network = getNetwork({
+    chainFamily: "evm",
+    chainSelectorName: runtime.config.chainSelectorName,
+  })
+  if (!network) {
+    throw new Error(`Unknown chain selector name: ${runtime.config.chainSelectorName}`)
+  }
+  const evmClient = new EVMClient(network.chainSelector.selector)
+
+  const header = evmClient
+    .headerByNumber(runtime, { blockNumber: LAST_FINALIZED_BLOCK_NUMBER })
+    .result()
+  if (!header.header?.blockNumber) {
+    throw new Error("Could not resolve the finalized block to pin reads to")
+  }
+  const atBlock = protoBigIntToBigint(header.header.blockNumber)
+
+  runtime.log(`Sweeping for stuck settlements at finalized block ${atBlock}`)
+
+  let settled = 0
+  settled += sweepFlights(runtime, evmClient, atBlock, MAX_SETTLEMENTS_PER_SWEEP - settled)
+  settled += sweepCrypto(runtime, evmClient, atBlock, MAX_SETTLEMENTS_PER_SWEEP - settled)
+  settled += sweepStocks(runtime, evmClient, atBlock, MAX_SETTLEMENTS_PER_SWEEP - settled)
+
+  const summary = settled === 0 ? "nothing stuck" : `settled ${settled}`
+  runtime.log(`Sweep complete at block ${atBlock}: ${summary}`)
+  return summary
+}
+
 export const initWorkflow = (config: Config) => {
   const network = getNetwork({
     chainFamily: "evm",
@@ -1005,7 +1448,10 @@ export const initWorkflow = (config: Config) => {
 
   const evmClient = new EVMClient(network.chainSelector.selector)
 
-  const handlers = [
+  // Typed off the SDK's own Workflow shape rather than inferred: inference
+  // would lock the array to the first entry's trigger payload (an EVM Log) and
+  // reject the cron handler, whose payload is a scheduled timestamp.
+  const handlers: Workflow<Config>[number][] = [
     handler(
       // topics[0] = event signature; no filter on the indexed marketId.
       evmClient.logTrigger(
@@ -1054,6 +1500,12 @@ export const initWorkflow = (config: Config) => {
         onStockSettlementRequested,
       ),
     )
+  }
+
+  // The reconciliation sweep. Registered last so its trigger index is stable
+  // as market categories come and go.
+  if (config.sweepSchedule && config.sweepSchedule !== "") {
+    handlers.push(handler(new CronCapability().trigger({ schedule: config.sweepSchedule }), onSweep))
   }
 
   return handlers

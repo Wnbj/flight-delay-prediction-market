@@ -516,6 +516,64 @@ created: `outcome=1 (Yes)`, `observedValue=6304701036297` ($63,047.01) vs a
 $63,000 strike, in tx
 `0x1743badf35a3fe29175c78527311d20194e4fa21792178db0910e0115e490ecf`.
 
+## The reconciliation sweep (cron trigger)
+
+The log-trigger design has a hole that has nothing to do with the code: **it
+needs someone to emit the log**. Every settlement in this project began with a
+human calling `requestSettlement()`. If the workflow was down when the event
+fired, or the settlement reverted, the market simply stays stuck — no second
+log is coming.
+
+`onSweep` is a fourth handler on a **cron trigger** (`cron-trigger@1.0.0`,
+already in the SDK). It reads the three market contracts directly and settles
+anything sitting in `SettlementRequested`, through the *same* settle functions
+the log handlers call — so a market settled by the sweep can never resolve
+differently from one settled by the trigger.
+
+```bash
+cre workflow simulate ./flight-settlement --target staging-settings --broadcast \
+  --trigger-index 3 --non-interactive
+```
+
+It paid for itself on the first run, finding three flight markets (6, 7, 8)
+left stuck in `SettlementRequested` by earlier sessions and settling all three.
+
+### Pinned to finalized, and why that sets the schedule
+
+A cron tick has no log to take a block from, and reading at `latest` would hand
+every DON node a different chain head — different report bytes, failed
+consensus. So every sweep read pins to the **last finalized block**, the one
+view of the chain nodes converge on without coordinating.
+
+That has a cost, and the first run demonstrated it. Finalized state lags:
+
+```bash
+cast block finalized --rpc-url $SEPOLIA_RPC_URL   # measured: 86 blocks / 17m12s behind latest
+```
+
+Run the sweep again a minute later and it sees the markets it just settled as
+still stuck, and settles them again. The contract rejects the duplicate —
+`ReportProcessed = false` on the forwarder, verified on the receipt — so
+nothing corrupts, but each retry burns a transaction.
+
+**The sweep period must therefore exceed the chain's finality lag.** At the
+initial five minutes that was three wasted writes per market; the schedule is
+now every 30 minutes, comfortably above the measured 17. Going faster would
+mean reading unfinalized state, trading determinism for latency — the wrong
+trade for a safety net, when the log trigger is already the fast path.
+
+### What it does not fix
+
+The sweep removes the human from *running the workflow*. It does not remove the
+human from *calling `requestSettlement()`* — a CRE workflow's only on-chain
+write is a signed report to `onReport()`, so it cannot make that call. Full
+autonomy needs `_processReport` to accept a report for any market past
+`settleAfter`, dropping the request step entirely. That is a change to
+`ParimutuelMarket`, so it lands whenever the contracts are next redeployed;
+`requestSettlement` exists only to give a log trigger something to listen to,
+and adds nothing to authorisation, which is already forwarder + author +
+workflow name.
+
 ## Appendix: free local rehearsal via anvil fork
 
 Before spending real Sepolia ETH, the same flow can run against a local anvil
