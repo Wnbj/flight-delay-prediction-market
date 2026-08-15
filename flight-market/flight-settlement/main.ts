@@ -42,7 +42,8 @@ import { z } from "zod"
 export type Config = {
   contractAddress: string
   chainSelectorName: string
-  apiUrl: string          // base URL of the flight status API
+  apiUrl: string          // AeroDataBox base URL, e.g. https://aerodatabox.p.rapidapi.com
+  apiKey: string          // RapidAPI key for AeroDataBox — never committed, see config.staging.example.json
   gasLimit: string
 }
 
@@ -69,12 +70,34 @@ const SETTLEMENT_REQUESTED_TOPIC = toEventSelector(
   "SettlementRequested(uint256,string,uint32,uint16)",
 )
 
-// --- API response ------------------------------------------------------------
+// --- API response --------------------------------------------------------
+// AeroDataBox (via RapidAPI): GET /flights/number/{iata}/{YYYY-MM-DD}
+// Schema pulled from the live OpenAPI spec (doc.aerodatabox.com), not guessed —
+// field names and the FlightStatus enum below are verbatim from FlightContract.
+// https://doc.aerodatabox.com/docs/openapi-rapidapi-v1.json
 
-const flightSchema = z.object({
-  status: z.string(),
-  arrivalDelayMinutes: z.number().nullable(),
+const dateTimeSchema = z.object({
+  utc: z.string(),
 })
+
+const movementSchema = z.object({
+  scheduledTime: dateTimeSchema.optional(),
+  revisedTime: dateTimeSchema.optional(),
+})
+
+const flightStatusEnum = z.enum([
+  "Unknown", "Expected", "EnRoute", "CheckIn", "Boarding", "GateClosed",
+  "Departed", "Delayed", "Approaching", "Arrived", "Canceled", "Diverted",
+  "CanceledUncertain",
+])
+
+const flightContractSchema = z.object({
+  status: flightStatusEnum,
+  arrival: movementSchema.optional(),
+})
+
+// The endpoint returns an array (codeshares can produce more than one entry).
+const flightResponseSchema = z.array(flightContractSchema)
 
 /**
  * Per-node result.
@@ -82,7 +105,8 @@ const flightSchema = z.object({
  * CONSENSUS HAZARD: every field here is aggregated across nodes, so anything
  * that varies per node breaks consensus. `delayMinutes` is deliberately
  * bucketed to whole minutes and `fetchedAt` is dropped via `ignore` — raw
- * API timestamps differ on every node and would never agree.
+ * API timestamps (lastUpdatedUtc, request time) differ on every node and
+ * would never agree.
  */
 type Observation = {
   delayMinutes: number
@@ -93,26 +117,58 @@ type Observation = {
 const fetchFlight = (
   sendRequester: HTTPSendRequester,
   apiUrl: string,
+  apiKey: string,
   flightIata: string,
-  departureDate: number,
+  departureDateIso: string,
 ): Observation => {
-  const url = `${apiUrl}?flight=${flightIata}&date=${departureDate}`
-  const response = sendRequester.sendRequest({ url, method: "GET" }).result()
+  const url = `${apiUrl}/flights/number/${flightIata}/${departureDateIso}?dateLocalRole=Departure`
+  const response = sendRequester
+    .sendRequest({
+      url,
+      method: "GET",
+      headers: {
+        "X-RapidAPI-Key": apiKey,
+        "X-RapidAPI-Host": "aerodatabox.p.rapidapi.com",
+      },
+    })
+    .result()
 
+  // 204 = no matching flight for that number/date.
+  if (response.statusCode === 204) {
+    throw new Error(`No flight found for ${flightIata} on ${departureDateIso}`)
+  }
   if (!ok(response)) {
     throw new Error(`HTTP ${response.statusCode} for ${flightIata}`)
   }
 
-  const parsed = flightSchema.parse(json(response))
+  const flights = flightResponseSchema.parse(json(response))
+  // Prefer the operating leg over a codeshare entry when both are present.
+  const flight = flights[0]
+  if (!flight) {
+    throw new Error(`Empty flight list for ${flightIata} on ${departureDateIso}`)
+  }
 
-  // Cancelled/diverted resolve YES per the contract's documented rules.
-  // Round to whole minutes so independent nodes converge on one value.
-  const delay =
-    parsed.arrivalDelayMinutes === null ? 0 : Math.round(parsed.arrivalDelayMinutes)
+  const isDisrupted =
+    flight.status === "Canceled" ||
+    flight.status === "CanceledUncertain" ||
+    flight.status === "Diverted"
+  const isLanded = flight.status === "Arrived"
+
+  let delayMinutes = 0
+  if (isLanded && flight.arrival?.scheduledTime && flight.arrival?.revisedTime) {
+    const scheduled = Date.parse(flight.arrival.scheduledTime.utc)
+    const actual = Date.parse(flight.arrival.revisedTime.utc)
+    // Round to whole minutes so independent nodes converge on one value.
+    delayMinutes = Math.round((actual - scheduled) / 60_000)
+  }
+
+  // Bucket down to the three states _processReport's caller cares about —
+  // matches the mock's {landed, cancelled, diverted, in-progress} shape.
+  const bucketedStatus = isDisrupted ? "cancelled" : isLanded ? "landed" : "airborne"
 
   return {
-    delayMinutes: delay,
-    status: parsed.status.toLowerCase(),
+    delayMinutes,
+    status: bucketedStatus,
     fetchedAt: 0,
   }
 }
@@ -137,6 +193,10 @@ export const onSettlementRequested = (
     `Settling market ${marketId}: ${flightIata} on ${departureDate}, threshold ${thresholdMinutes}m`,
   )
 
+  // AeroDataBox wants YYYY-MM-DD; the contract stores YYYYMMDD as a uint32.
+  const dateDigits = departureDate.toString()
+  const departureDateIso = `${dateDigits.slice(0, 4)}-${dateDigits.slice(4, 6)}-${dateDigits.slice(6, 8)}`
+
   // --- fetch with consensus ---
   const httpClient = new HTTPClient()
   const aggregation = ConsensusAggregationByFields<Observation>({
@@ -153,16 +213,17 @@ export const onSettlementRequested = (
     const obs = httpClient
       .sendRequest(runtime, fetchFlight, aggregation)(
         runtime.config.apiUrl,
+        runtime.config.apiKey,
         flightIata,
-        Number(departureDate),
+        departureDateIso,
       )
       .result()
 
     observedDelay = obs.delayMinutes
     observedStatus = obs.status
 
-    const isDisrupted = obs.status === "cancelled" || obs.status === "diverted"
-    const isLanded = obs.status === "landed" || obs.status === "arrived"
+    const isDisrupted = obs.status === "cancelled"
+    const isLanded = obs.status === "landed"
 
     if (isDisrupted) {
       outcome = OUTCOME_YES

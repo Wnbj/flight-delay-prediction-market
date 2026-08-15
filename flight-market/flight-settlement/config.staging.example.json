@@ -1,0 +1,7 @@
+{
+  "contractAddress": "0x09068efb21fabeac59694e01428cf438cf38e2b3",
+  "chainSelectorName": "ethereum-testnet-sepolia",
+  "apiUrl": "https://aerodatabox.p.rapidapi.com",
+  "apiKey": "",
+  "gasLimit": "1000000"
+}

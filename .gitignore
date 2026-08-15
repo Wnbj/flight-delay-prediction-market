@@ -19,3 +19,7 @@ contracts/cache/
 
 # frontend build output
 frontend/dist/
+
+# CRE workflow config — holds the AeroDataBox API key locally.
+# Copy config.staging.example.json to config.staging.json and fill it in.
+flight-market/flight-settlement/config.staging.json

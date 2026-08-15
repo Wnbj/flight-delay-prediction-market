@@ -114,34 +114,69 @@ Status `3` = Settled (or `4` = Void). Status `2` = still `SettlementRequested`,
 meaning the write never actually landed — check the `ReportProcessed` event on
 the forwarder (`0x15fC6ae9...`) for its `result` bool.
 
-## Mock flight API
+## Flight data source
+
+`main.ts` calls **AeroDataBox** (`GET /flights/number/{iata}/{YYYY-MM-DD}`)
+via RapidAPI. Schema (the `FlightContract`/`FlightStatus` shapes in
+`fetchFlight`) is pulled verbatim from the live OpenAPI spec at
+doc.aerodatabox.com, not guessed — see the comment above `fetchFlight` in
+`main.ts` for the exact source.
+
+### Setup
+
+1. Sign up at RapidAPI and subscribe to AeroDataBox
+   (https://rapidapi.com/aedbx-aedbx/api/aerodatabox) — free tier exists.
+2. `cp flight-market/flight-settlement/config.staging.example.json flight-market/flight-settlement/config.staging.json`
+3. Fill in `apiKey` with your RapidAPI key.
+
+`config.staging.json` is **gitignored**, not committed — same treatment as
+`.env`. Config JSON values are passed through to the workflow verbatim (no
+`${VAR_NAME}` substitution like `project.yaml`'s RPC urls get — confirmed by
+running a real `cre workflow simulate` and reading back the literal string),
+so there is no way to keep the key in a tracked file without it leaking into
+git history. `config.staging.example.json` is the tracked template.
+
+### Status mapping
+
+AeroDataBox's `FlightStatus` enum collapses to the three states
+`_processReport` already understands:
+
+| AeroDataBox status | bucketed | outcome |
+|---|---|---|
+| `Canceled`, `CanceledUncertain`, `Diverted` | `cancelled` | Yes (per contract rules) |
+| `Arrived` | `landed` | Yes/No by `arrival.revisedTime - arrival.scheduledTime` vs threshold |
+| anything else (`Expected`, `EnRoute`, `Delayed`, …) | `airborne` | Void — no final delay yet |
+
+Only `Arrived` computes a real delay; everything short of landing voids
+rather than guessing, same as before.
+
+### Not yet verified
+
+The AeroDataBox call itself has **not** been run against a live key — no key
+was available while building this. Before relying on it:
+run `cre workflow simulate` (no `--broadcast`) against a market created with
+a **real** flight number and a date AeroDataBox actually covers (its free
+tier's historical lookback is limited — check current coverage before
+picking a date), and confirm `fetchFlight` parses a real response rather
+than throwing.
+
+### Mock gist (kept for deterministic testing)
+
+The original mock is still useful for exercising all three outcomes on
+demand, without depending on a real flight's timing. It no longer matches
+`main.ts`'s expected response shape (`fetchFlight` now parses AeroDataBox's
+`FlightContract`, not `{status, arrivalDelayMinutes}`) — reviving it would
+mean pointing `apiUrl` at a small shim that returns AeroDataBox-shaped JSON,
+or keeping a second workflow variant around. Not done, since it wasn't asked
+for; noting the option here in case deterministic on-demand testing is
+needed again later.
 
 Public gist: https://gist.github.com/Wnbj/c0d43e5e48303654c2c5219d815495e4
 
-**Use the commit-pinned raw URL**, not the floating one. The floating
-`/raw/flight-status.json` is served with `cache-control: max-age=300`, so edits
-take up to 5 minutes to appear and query params do not bust the cache. Pinned
-URLs are immutable and update instantly:
-
-```bash
-SHA=$(gh api gists/c0d43e5e48303654c2c5219d815495e4 --jq '.history[0].version')
-echo "https://gist.githubusercontent.com/Wnbj/c0d43e5e48303654c2c5219d815495e4/raw/$SHA/flight-status.json"
-```
-
-Then put that URL in `flight-market/flight-settlement/config.staging.json`.
-
-### Resolution paths (market threshold = 30)
-
-| gist content | outcome |
-|---|---|
-| `{"status":"landed","arrivalDelayMinutes":42}` | 1 = Yes |
-| `{"status":"landed","arrivalDelayMinutes":15}` | 2 = No |
-| `{"status":"airborne","arrivalDelayMinutes":null}` | 3 = Void |
-
-All three re-verified end-to-end on the `ReceiverTemplate`-based contract on
-real Sepolia (contract `0x09068efb21fabeac59694e01428cf438cf38e2b3`), each on
-its own market, confirmed via direct `cast call` on-chain state (not CLI
-output):
+Historical results, from when `main.ts` still spoke the mock's shape — all
+three re-verified end-to-end on the `ReceiverTemplate`-based contract on real
+Sepolia (contract `0x09068efb21fabeac59694e01428cf438cf38e2b3`), confirmed
+via direct `cast call` on-chain state:
 
 | market | outcome | on-chain status | on-chain outcome |
 |---|---|---|---|
@@ -178,3 +213,14 @@ anvil --fork-url https://ethereum-sepolia-rpc.publicnode.com --port 8545
 - `project.yaml` staging RPC points at `https://ethereum-sepolia-rpc.publicnode.com`
   (real Sepolia). Swap to a local anvil fork URL if rehearsing for free (see
   Appendix).
+- **AeroDataBox is wired in but untested against a live key** — see "Not yet
+  verified" above. The gist mock it replaced no longer matches the response
+  shape `fetchFlight` expects, so deterministic on-demand testing (pick any
+  outcome at will) isn't available until either a real flight with known
+  timing is used, or a shim reviving the mock is built.
+- **Single data source.** `ConsensusAggregationByFields` already runs
+  per-node, but every node calls the same AeroDataBox endpoint — it protects
+  against a dishonest/broken *node*, not a wrong *source*. A second
+  independent provider feeding the same `median` aggregation would close
+  that gap; not built, since it's a straightforward extension of the
+  existing pattern rather than a new mechanism.
