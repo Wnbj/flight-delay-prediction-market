@@ -1,5 +1,6 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Nav } from "./components/Nav";
+import { SpotProvider } from "./hooks/useSpot";
 import { useWallet } from "./hooks/useWallet";
 import { useChainData } from "./hooks/useChainData";
 import { useRouter } from "./lib/router";
@@ -9,6 +10,7 @@ import { Detail } from "./views/Detail";
 import { Portfolio } from "./views/Portfolio";
 import { Leaderboard } from "./views/Leaderboard";
 import type { View } from "./lib/view";
+import { MarketStatus } from "./lib/types";
 
 export default function App() {
   const wallet = useWallet();
@@ -41,8 +43,18 @@ export default function App() {
 
   const selected = data.markets.find((m) => m.key === selectedKey) ?? null;
 
+  // Only poll for assets that still have an unresolved market — a settled
+  // market shows the price the oracle used, not a live one.
+  const liveSymbols = useMemo(
+    () =>
+      data.markets.flatMap((m) =>
+        m.categoryId === "crypto" && m.status === MarketStatus.Open ? [m.asset] : [],
+      ),
+    [data.markets],
+  );
+
   return (
-    <>
+    <SpotProvider symbols={liveSymbols}>
       <Nav view={view} onNavigate={navigate} wallet={wallet} balance={data.balance} />
 
       {data.error && (
@@ -80,7 +92,6 @@ export default function App() {
             <Landing
               markets={data.markets}
               stakeEvents={data.stakeEvents}
-              now={now}
               onNavigate={navigate}
               onOpenMarket={openMarket}
               onPickCategory={(c) => router.navigate({ view: "markets", categoryFilter: c })}
@@ -91,7 +102,6 @@ export default function App() {
             <Markets
               markets={data.markets}
               stakeEvents={data.stakeEvents}
-              now={now}
               categoryFilter={categoryFilter}
               // Filter-pill clicks rewrite the current entry rather than
               // pushing a new one — Back should undo "left this page", not
@@ -139,6 +149,6 @@ export default function App() {
           )}
         </>
       )}
-    </>
+    </SpotProvider>
   );
 }

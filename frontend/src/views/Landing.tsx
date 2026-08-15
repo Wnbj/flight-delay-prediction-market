@@ -10,14 +10,12 @@ import type { View } from "../lib/view";
 export function Landing({
   markets,
   stakeEvents,
-  now,
   onNavigate,
   onOpenMarket,
   onPickCategory,
 }: {
   markets: Market[];
   stakeEvents: StakeEvent[];
-  now: number;
   onNavigate: (v: View) => void;
   onOpenMarket: (key: string) => void;
   onPickCategory: (id: CategoryId) => void;
@@ -337,7 +335,7 @@ export function Landing({
           <div className="grid-3" style={{ maxWidth: 1200 }}>
             {trending.map((m, i) => (
               <Reveal key={m.key} delay={i * 60}>
-                <MarketCard market={m} events={stakeEvents} now={now} onOpen={onOpenMarket} />
+                <MarketCard market={m} events={stakeEvents} onOpen={onOpenMarket} />
               </Reveal>
             ))}
           </div>

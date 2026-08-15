@@ -4,7 +4,6 @@ import { addressUrl, txUrl } from "../lib/config";
 import {
   formatDepartureDate,
   formatPercent,
-  formatRelative,
   formatTimestamp,
   formatToken,
   formatUsd,
@@ -26,6 +25,8 @@ import {
   type StakeEvent,
 } from "../lib/types";
 import { Sparkline } from "../components/Sparkline";
+import { Countdown } from "../components/Countdown";
+import { LivePrice } from "../components/LivePrice";
 import { MarketCard } from "../components/MarketCard";
 import { TradePanel } from "../components/TradePanel";
 import type { WalletState } from "../hooks/useWallet";
@@ -150,12 +151,25 @@ export function Detail({
             )}
             <div className="muted" style={{ fontSize: 13 }}>
               {yes === null ? "first stake sets the price" : "implied chance of Yes"} ·{" "}
-              {formatToken(totalPool(market))} staked ·{" "}
-              {market.status === MarketStatus.Open && now < market.closeTime
-                ? `closes ${formatRelative(market.closeTime, now)}`
-                : statusLabel(market.status)}
+              {formatToken(totalPool(market))} staked
+              {market.status !== MarketStatus.Open && ` · ${statusLabel(market.status)}`}
             </div>
           </div>
+
+          {market.status === MarketStatus.Open && (
+            <div
+              style={{
+                display: "flex",
+                gap: "var(--space-6)",
+                flexWrap: "wrap",
+                alignItems: "baseline",
+                marginBottom: "var(--space-4)",
+              }}
+            >
+              <Countdown market={market} size={15} />
+              <LivePrice market={market} size={15} />
+            </div>
+          )}
 
           <Sparkline market={market} events={stakeEvents} height={160} strokeWidth={1.5} />
 
@@ -394,13 +408,7 @@ export function Detail({
           </h3>
           <div className="grid-3">
             {related.map((m) => (
-              <MarketCard
-                key={m.id}
-                market={m}
-                events={stakeEvents}
-                now={now}
-                onOpen={onOpenMarket}
-              />
+              <MarketCard key={m.key} market={m} events={stakeEvents} onOpen={onOpenMarket} />
             ))}
           </div>
         </div>

@@ -96,3 +96,15 @@ export function formatUsd(scaled: bigint): string {
   const cents = Number((scaled % PRICE_DECIMALS) / 1_000_000n);
   return `$${whole.toLocaleString()}.${cents.toString().padStart(2, "0")}`;
 }
+
+/** The 8-decimal on-chain price as a plain number, for comparing against spot. */
+export function toUsdNumber(scaled: bigint): number {
+  return Number(scaled) / 1e8;
+}
+
+export function formatUsdNumber(value: number): string {
+  return `$${value.toLocaleString(undefined, {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`;
+}

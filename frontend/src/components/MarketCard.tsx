@@ -1,27 +1,23 @@
 import { category } from "../lib/categories";
-import { formatRelative, formatToken, formatPercent, formatUsd } from "../lib/format";
+import { formatToken, formatPercent, formatUsd } from "../lib/format";
 import { impliedYesPercent, isOneSided, statusLabel, totalPool } from "../lib/parimutuel";
 import { MarketStatus, type Market, type StakeEvent } from "../lib/types";
+import { Countdown } from "./Countdown";
+import { LivePrice } from "./LivePrice";
 import { Sparkline } from "./Sparkline";
 
 export function MarketCard({
   market,
   events,
-  now,
   onOpen,
 }: {
   market: Market;
   events: StakeEvent[];
-  now: number;
   onOpen: (key: string) => void;
 }) {
   const cat = category(market.categoryId);
   const yes = impliedYesPercent(market);
   const no = yes === null ? null : 100 - yes;
-  // Once a market leaves Open, its lifecycle status is the truth — a settled
-  // market must never show a "closes in …" countdown just because the clock
-  // has not reached closeTime.
-  const stillCounting = market.status === MarketStatus.Open && now < market.closeTime;
 
   return (
     <div
@@ -60,9 +56,11 @@ export function MarketCard({
           style={{ fontSize: 11, display: "flex", alignItems: "center", gap: 4 }}
         >
           <ClockIcon />
-          {stillCounting
-            ? `closes ${formatRelative(market.closeTime, now)}`
-            : statusLabel(market.status)}
+          {market.status === MarketStatus.Open ? (
+            <Countdown market={market} size={11} showLabel={false} />
+          ) : (
+            statusLabel(market.status)
+          )}
         </span>
       </div>
 
@@ -77,6 +75,8 @@ export function MarketCard({
           {market.asset} · strike {formatUsd(market.strikePrice)}
         </div>
       )}
+
+      <LivePrice market={market} size={12} />
 
       <Sparkline market={market} events={events} />
 

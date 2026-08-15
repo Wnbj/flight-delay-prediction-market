@@ -15,14 +15,12 @@ const SORTS: { key: SortMode; label: string }[] = [
 export function Markets({
   markets,
   stakeEvents,
-  now,
   categoryFilter,
   onCategoryFilter,
   onOpenMarket,
 }: {
   markets: Market[];
   stakeEvents: StakeEvent[];
-  now: number;
   categoryFilter: CategoryId | "all";
   onCategoryFilter: (c: CategoryId | "all") => void;
   onOpenMarket: (key: string) => void;
@@ -113,13 +111,7 @@ export function Markets({
       ) : (
         <div className="grid-3" style={{ maxWidth: 1300 }}>
           {filtered.map((m) => (
-            <MarketCard
-              key={m.key}
-              market={m}
-              events={stakeEvents}
-              now={now}
-              onOpen={onOpenMarket}
-            />
+            <MarketCard key={m.key} market={m} events={stakeEvents} onOpen={onOpenMarket} />
           ))}
         </div>
       )}
