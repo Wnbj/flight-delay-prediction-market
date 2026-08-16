@@ -17,8 +17,11 @@ export const STOCK_MARKET_ADDRESS = (import.meta.env.VITE_STOCK_MARKET_ADDRESS ?
 export const RESERVE_MARKET_ADDRESS = (import.meta.env.VITE_RESERVE_MARKET_ADDRESS ??
   "0xa768Be2741A0464b81606649eCa45bfF7aD4d939") as `0x${string}`;
 
+// Redeployed 2026-08-16 for multi-LP. The previous address
+// (0x21A2…4801) is single-provider and answers to `pool()`, not `poolState()`;
+// its five markets are settled and drained, so nothing is stranded there.
 export const AMM_MARKET_ADDRESS = (import.meta.env.VITE_AMM_MARKET_ADDRESS ??
-  "0x21A26cC7f7A5035330257aA61e44549BE30f4801") as `0x${string}`;
+  "0xc9961096dc98eE17eD28bB417BB726F1b64f84FF") as `0x${string}`;
 
 export const TOKEN_ADDRESS = (import.meta.env.VITE_TOKEN_ADDRESS ??
   "0xcd123a8d74ef062dddd2287e87bc88eb3b208b54") as `0x${string}`;

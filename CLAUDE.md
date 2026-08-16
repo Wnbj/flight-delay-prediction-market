@@ -38,35 +38,35 @@ Monotone, boundary between rungs 2 and 3, no inconsistency. Verified through
 numbers are what the RUNBOOK's settlement check quotes. Reading 2 as
 "SettlementRequested" makes a settled market look stuck.
 
-**Nothing has been withdrawn.** The maker's liquidity and residual shares are
-still sitting in the old contract; draining it is step 2 of the multi-LP
-migration above. On the OLD address the call is `withdrawMakerLiquidity(i)` —
-the new contract renames it `withdrawLiquidity`.
+**Drained to exactly 0**, no dust — all five reserves plus the maker's residual
+shares, 210 mUSDC in total. That address is now inert and kept only as history.
 
-### Multi-LP is written and green, waiting on a deploy
+### Multi-LP is deployed and live, with an open ladder on it
 
-`AmmMarket` now takes any number of liquidity providers and charges a per-market
-trading fee retained in the pool. Contract, forge suite (71 tests, all green),
-ABI, read paths, LP accounting and UI are all done; **nothing is deployed**.
+`AmmMarket` **`0xc9961096dc98eE17eD28bB417BB726F1b64f84FF`** — takes any number
+of liquidity providers and charges a per-market fee retained in the pool.
+Deployed 2026-08-16. Its `getExpectedWorkflowName()` was compared byte-for-byte
+against CryptoMarket's before anything was seeded; a mismatch there fails every
+settlement *silently*.
 
-The blocking order is deliberate:
+Five rungs live, seeded 40 mUSDC each at 30 bps, **expiry ~23:21 UTC**:
+$62,750 / $63,000 / $63,250 / $63,500 / $63,750 opened at 85/70/45/25/12%.
+Settling is the same manual two-step as before — `requestSettlement(i)`, then
+`cre workflow simulate ... --trigger-index 1 --evm-tx-hash <tx>`.
 
-1. Settle the five open rungs on the old address (below).
-2. Drain it — `withdrawMakerLiquidity(i)` still exists there; the NEW contract
-   calls it `withdrawLiquidity`.
-3. Deploy, then `config.staging.json` + **re-simulate the workflow** so the log
-   trigger's address list contains the new address, then
-   `VITE_AMM_MARKET_ADDRESS`. Leave `VITE_DEPLOY_BLOCK` alone — it is global and
-   raising it erases flight/crypto/stock history.
+**The multi-LP path is now proven on chain, not just in tests.** On rung 2, a
+second wallet bought 3 mUSDC of YES (quote matched the fill exactly, 6,340,546
+shares and a 9,000 fee = 30 bps), then deposited 5 mUSDC as a provider:
 
-`WORKFLOW_NAME` must be `flight-settlement-staging`, **not** the
-`amm-settlement-staging` used in the test file. A mismatch fails every
-settlement silently.
+- price went **4935 → 4935**, unchanged, which is the whole point of scaling
+  both reserves by a common factor;
+- it minted 5,455,618 of 45,455,618 LP shares and handed back 127,141 NO as the
+  residual, exactly as `quoteAddLiquidity` had said;
+- the collateralisation invariant closes to the unit on both sides afterwards.
 
-Until the new address is live the frontend cannot read AMM markets at all —
-`pool()` was renamed `poolState()` precisely so a stale reader reverts instead
-of decoding the wrong field. `readMarkets` now isolates that per category, so
-the other four still load and a banner names the missing one.
+What is NOT yet exercised on chain is a pro-rata withdrawal with two providers
+— it needs this ladder to settle first. The forge suite covers it, including a
+multi-LP fuzz with Void in the rotation.
 
 ### CSPX is the last unverified path
 
