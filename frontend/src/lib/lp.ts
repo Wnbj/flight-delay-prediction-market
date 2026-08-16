@@ -1,4 +1,10 @@
-import { MarketStatus, Outcome, type LpEvent, type LpPosition, type Market, type StakeEvent } from "./types";
+import {
+  MarketStatus,
+  type LpEvent,
+  type LpPosition,
+  type Market,
+  type StakeEvent,
+} from "./types";
 
 /**
  * Valuing a liquidity position.
@@ -186,28 +192,4 @@ export function depositsByMarket(
     out.set(e.marketKey, (out.get(e.marketKey) ?? 0n) + e.amount);
   }
   return out;
-}
-
-/** Every address that has provided liquidity to a market. */
-export function providersByMarket(lpEvents: LpEvent[]): Map<string, Set<string>> {
-  const out = new Map<string, Set<string>>();
-  for (const e of lpEvents) {
-    if (e.direction !== "add") continue;
-    let s = out.get(e.marketKey);
-    if (!s) {
-      s = new Set();
-      out.set(e.marketKey, s);
-    }
-    s.add(e.provider.toLowerCase());
-  }
-  return out;
-}
-
-/** Whether an outcome leaves anything for holders of a side — used by views. */
-export function isResolved(m: Market): boolean {
-  return (
-    m.status === MarketStatus.Settled ||
-    m.status === MarketStatus.Void ||
-    m.outcome === Outcome.Void
-  );
 }

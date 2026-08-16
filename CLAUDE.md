@@ -49,28 +49,33 @@ Deployed 2026-08-16. Its `getExpectedWorkflowName()` was compared byte-for-byte
 against CryptoMarket's before anything was seeded; a mismatch there fails every
 settlement *silently*.
 
-Five rungs live, seeded 40 mUSDC each at 30 bps:
-$62,750 / $63,000 / $63,250 / $63,500 / $63,750 opened at 85/70/45/25/12%.
-**Trading closes 19:51:36 UTC, expiry 20:21:36, settleable from 20:22:36**
-(`settleAfter` 1786911756). Read those off `terms()` rather than the UI — the
-app renders timestamps in the browser's local zone, and this file has already
-had them written down three hours out because of it.
-Settling is the same manual two-step as before — `requestSettlement(i)`, then
-`cre workflow simulate ... --trigger-index 1 --evm-tx-hash <tx>`.
+Its first ladder — five rungs, 40 mUSDC each at 30 bps — is **settled**, at BTC
+**$63,062.36**: Yes at $62,750 and $63,000, No at $63,250 / $63,500 / $63,750.
+Boundary between rungs 1 and 2, monotone.
 
-**The multi-LP path is now proven on chain, not just in tests.** On rung 2, a
-second wallet bought 3 mUSDC of YES (quote matched the fill exactly, 6,340,546
-shares and a 9,000 fee = 30 bps), then deposited 5 mUSDC as a provider:
+Read times off `terms()` rather than the UI — the app renders timestamps in the
+browser's local zone, and this file has already had them written down three
+hours out because of it.
 
-- price went **4935 → 4935**, unchanged, which is the whole point of scaling
-  both reserves by a common factor;
-- it minted 5,455,618 of 45,455,618 LP shares and handed back 127,141 NO as the
-  residual, exactly as `quoteAddLiquidity` had said;
-- the collateralisation invariant closes to the unit on both sides afterwards.
+**The whole multi-LP lifecycle is now proven on chain, not just in tests.** All
+of it on rung 2:
 
-What is NOT yet exercised on chain is a pro-rata withdrawal with two providers
-— it needs this ladder to settle first. The forge suite covers it, including a
-multi-LP fuzz with Void in the rotation.
+- a second wallet bought 3 mUSDC of YES — the quote matched the fill exactly,
+  6,340,546 shares and a 9,000 fee, which is 30 bps to the unit;
+- the same wallet then deposited 5 mUSDC as a provider and the price went
+  **4935 → 4935**, unchanged. That is the entire point of scaling both reserves
+  by a common factor, and the thing most likely to be wrong without showing it;
+- it minted 5,455,618 of 45,455,618 LP shares and kept 127,141 NO as residual,
+  exactly as `quoteAddLiquidity` said;
+- after settlement both providers withdrew and received **exactly** what
+  `lpPosition` quoted — 35,727,272 and 4,872,858 against a 40,600,131 reserve.
+  The payout ratio reproduces the share ratio to six decimals, and the sum is
+  one unit UNDER the reserve: the floor-per-provider bound, holding;
+- both then redeemed residual shares through the separate second claim, and the
+  rung drained from 48 mUSDC to **1 unit** of dust.
+
+Rungs 0, 1, 3 and 4 are settled but **not withdrawn** — 160 mUSDC still sits in
+the contract. Nothing depends on collecting it.
 
 ### CSPX is the last unverified path
 
