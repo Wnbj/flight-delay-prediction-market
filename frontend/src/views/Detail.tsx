@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import { category } from "../lib/categories";
-import { addressUrl, txUrl } from "../lib/config";
+import { addressUrl, ATTESTATION_LABEL, txUrl } from "../lib/config";
 import { formatDepartureDate, formatMarketValue, formatPercent, formatTimestamp, formatToken, outcomeLabel, shortAddress, statusLabel } from "../lib/format";
 import {
   impliedYesPercent,
@@ -236,6 +236,16 @@ export function Detail({
               style={{ marginTop: "var(--space-4)", boxShadow: "var(--shadow-md)" }}
             >
               <div className="eyebrow">Settled by Chainlink CRE</div>
+              {/*
+                * The same sentence the live pipeline uses, from the same
+                * constant — this card said "Settled by Chainlink CRE" alone on
+                * a project that has never run against a real DON, and two
+                * places claiming different things about the same event is how
+                * one of them quietly stays wrong.
+                */}
+              <div className="muted" style={{ fontSize: 11 }}>
+                {ATTESTATION_LABEL}
+              </div>
               <div style={{ display: "flex", gap: "var(--space-8)", flexWrap: "wrap" }}>
                 <Stat label="Outcome" value={outcomeLabel(settlement.outcome)} />
                 {market.categoryId === "flights" ? (
