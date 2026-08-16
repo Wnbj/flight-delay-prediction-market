@@ -5,6 +5,11 @@ system is and why it is built this way lives in [README.md](README.md); how to
 operate it lives in [RUNBOOK.md](RUNBOOK.md). This file only holds what those
 two cannot: what is unfinished right now.
 
+Named `CLAUDE.md` so it loads automatically at the start of a session. That
+makes it worth keeping current — a stale status file is more misleading than no
+status file, because it is read as fact rather than skimmed as notes. The
+timestamp below is the first thing to distrust.
+
 Last updated **2026-08-16 16:03 UTC**. Working tree clean, `main` level with
 `origin/main`.
 
