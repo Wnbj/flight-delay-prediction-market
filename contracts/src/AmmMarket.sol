@@ -140,6 +140,7 @@ contract AmmMarket is ReceiverTemplate {
     error AlreadyRedeemed();
     error SlippageTooHigh();
     error NotEnoughShares();
+    error BadOpeningPrice();
 
     constructor(IERC20 _token, address _forwarder) ReceiverTemplate(_forwarder) {
         token = _token;
@@ -148,10 +149,29 @@ contract AmmMarket is ReceiverTemplate {
     // --- market lifecycle --------------------------------------------------
 
     /**
-     * @param liquidity collateral the caller seeds the pool with. It mints an
-     *                  equal number of YES and NO shares, so the market opens
-     *                  at exactly even odds — the maker expresses no view, they
-     *                  are providing the ability to trade.
+     * @param liquidity collateral the caller seeds the pool with, minting one
+     *                  YES and one NO share per unit.
+     * @param openingYesPriceBps the price the market should open at, 100–9900.
+     *
+     * OPENING AT A CHOSEN PRICE, rather than always at even money.
+     *
+     * The first version always split the minted sets evenly, so every market
+     * opened at 50% whatever its strike. That is defensible for a lone market
+     * — the maker takes no view — and useless for a strike ladder, where five
+     * rungs all reading 50% say nothing about where the price will land. The
+     * only way to give the ladder a shape was to trade every rung by hand,
+     * which cost `L·(sqrt(p/(1-p)) - 1)` per rung and ran to more than the
+     * liquidity itself on the far strikes.
+     *
+     * So the pool takes reserves in the ratio `y:n = (1-p):p`, scaled so the
+     * larger side uses the whole seed, and the maker KEEPS the remainder of
+     * the other side. That leftover is a real position: a maker who opens a
+     * market at 85% ends up holding YES shares, which is exactly what having
+     * that view means. They are not quoting for free.
+     *
+     * The invariant is untouched — every minted share is still accounted for,
+     * either in the pool or in the maker's own balance — so
+     * `totalYes == totalNo == collateral` continues to hold.
      */
     function newMarket(
         string calldata question,
@@ -159,11 +179,15 @@ contract AmmMarket is ReceiverTemplate {
         uint64 strikePrice,
         uint64 closeTime,
         uint64 expiryTime,
-        uint256 liquidity
+        uint256 liquidity,
+        uint256 openingYesPriceBps
     ) external returns (uint256 marketId) {
         if (strikePrice == 0) revert BadStrike();
         if (closeTime > expiryTime) revert BadExpiry();
         if (liquidity == 0) revert NoLiquidity();
+        // Bounded away from the ends: at 0 or 10000 one reserve would be zero,
+        // the constant product would collapse and no trade could ever price.
+        if (openingYesPriceBps < 100 || openingYesPriceBps > 9_900) revert BadOpeningPrice();
 
         token.safeTransferFrom(msg.sender, address(this), liquidity);
 
@@ -177,10 +201,28 @@ contract AmmMarket is ReceiverTemplate {
         m.settleAfter = expiryTime + SETTLEMENT_DELAY;
         m.status = Status.Open;
         m.maker = msg.sender;
-        // A complete set per unit: equal reserves, so price starts at 50%.
-        m.yesReserve = liquidity;
-        m.noReserve = liquidity;
+
+        // The scarcer side is the dearer one, so a high YES price means the
+        // pool holds few YES. Whichever side is larger takes the whole seed.
+        uint256 yesReserve;
+        uint256 noReserve;
+        if (openingYesPriceBps >= 5_000) {
+            noReserve = liquidity;
+            yesReserve = (liquidity * (10_000 - openingYesPriceBps)) / openingYesPriceBps;
+        } else {
+            yesReserve = liquidity;
+            noReserve = (liquidity * openingYesPriceBps) / (10_000 - openingYesPriceBps);
+        }
+        if (yesReserve == 0 || noReserve == 0) revert BadOpeningPrice();
+
+        m.yesReserve = yesReserve;
+        m.noReserve = noReserve;
         m.collateral = liquidity;
+
+        // Whatever the pool did not take is the maker's own position — the
+        // other half of expressing a view, and what puts their money at risk.
+        yesShares[marketId][msg.sender] = liquidity - yesReserve;
+        noShares[marketId][msg.sender] = liquidity - noReserve;
 
         emit MarketCreated(marketId, uint8(asset), strikePrice, expiryTime, liquidity);
     }

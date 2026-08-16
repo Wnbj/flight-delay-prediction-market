@@ -18,14 +18,16 @@ import {MockUSDC} from "../src/MockUSDC.sol";
  * it opens. Parimutuel rungs read "no odds yet" until somebody stakes, which
  * makes a ladder of five of them a column of blanks.
  *
- * Note that each rung still OPENS at even money, because seeding mints equal
- * reserves and the maker takes no view. A fresh ladder therefore reads 50%
- * five times over; it only takes shape once traded.
+ * Each rung opens at a price supplied by the maker rather than at even money.
+ * A ladder seeded flat reads 50% five times over and says nothing about where
+ * the price will land; the shape IS the information. OPEN_BPS lists one
+ * opening price per rung, highest strike last.
  *
  * Required env:
  *   AMM_MARKET, TOKEN, DEPLOYER_PK
  *   STRIKE_LOW, STRIKE_STEP - whole dollars
  *   RUNGS                   - how many strikes
+ *   OPEN_BPS                - comma-separated opening prices, one per rung
  * Optional:
  *   CLOSE_IN, EXPIRY_IN     - seconds from now (default 7200 / 9000)
  *   LIQUIDITY               - per rung, 6-decimal token units (default 40e6)
@@ -39,6 +41,8 @@ contract CreateLadder is Script {
         uint64 low = uint64(vm.envUint("STRIKE_LOW"));
         uint64 step = uint64(vm.envUint("STRIKE_STEP"));
         uint256 rungs = vm.envUint("RUNGS");
+        uint256[] memory openingBps = vm.envUint("OPEN_BPS", ",");
+        require(openingBps.length == rungs, "OPEN_BPS must have one entry per rung");
         uint256 liquidity = vm.envOr("LIQUIDITY", uint256(40e6));
 
         uint64 closeTime = uint64(block.timestamp + vm.envOr("CLOSE_IN", uint256(7200)));
@@ -54,7 +58,8 @@ contract CreateLadder is Script {
                 strike * 1e8,
                 closeTime,
                 expiryTime,
-                liquidity
+                liquidity,
+                openingBps[i]
             );
             console2.log("rung", id, "strike", strike);
         }

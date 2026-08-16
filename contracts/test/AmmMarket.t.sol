@@ -49,6 +49,10 @@ contract AmmMarketTest is Test {
     // --- helpers ------------------------------------------------------------
 
     function _newMarket() internal returns (uint256 id) {
+        return _newMarketAt(5_000);
+    }
+
+    function _newMarketAt(uint256 openingBps) internal returns (uint256 id) {
         vm.prank(maker);
         id = market.newMarket(
             "Will BTC be at or above $63,000?",
@@ -56,7 +60,8 @@ contract AmmMarketTest is Test {
             STRIKE,
             closeTime,
             expiryTime,
-            LIQUIDITY
+            LIQUIDITY,
+            openingBps
         );
     }
 
@@ -310,6 +315,100 @@ contract AmmMarketTest is Test {
         assertEq(token.balanceOf(address(market)), 0);
     }
 
+    // --- opening at a chosen price ------------------------------------------
+
+    /**
+     * A ladder seeded flat reads 50% at every strike, which says nothing about
+     * where the price will land — the shape IS the information. Before this,
+     * the only way to get one was to trade every rung by hand.
+     */
+    function test_opensAtTheRequestedPrice() public {
+        uint256[5] memory targets = [uint256(1_200), 2_500, 4_500, 7_000, 8_500];
+        for (uint256 i = 0; i < targets.length; i++) {
+            uint256 id = _newMarketAt(targets[i]);
+            // Within a tenth of a percent; reserves are integers.
+            assertApproxEqAbs(market.yesPriceBps(id), targets[i], 10);
+        }
+    }
+
+    function test_evenMoneyStillSeedsEqualReserves() public {
+        uint256 id = _newMarketAt(5_000);
+        (uint256 yes, uint256 no,) = _pool(id);
+        assertEq(yes, no);
+        assertEq(market.yesPriceBps(id), 5_000);
+    }
+
+    /**
+     * The other half of quoting a view: whatever the pool does not take is the
+     * maker's own position. Opening a market at 85% leaves them holding YES.
+     */
+    function test_makerKeepsThePositionImpliedByTheirPrice() public {
+        uint256 id = _newMarketAt(8_500);
+        assertGt(market.yesShares(id, maker), 0, "a bullish maker should hold YES");
+        assertEq(market.noShares(id, maker), 0);
+
+        uint256 bearish = _newMarketAt(1_200);
+        assertGt(market.noShares(bearish, maker), 0, "a bearish maker should hold NO");
+        assertEq(market.yesShares(bearish, maker), 0);
+    }
+
+    /**
+     * The invariant must survive an asymmetric seed: every minted share is
+     * still accounted for, whether it sits in the pool or in the maker's own
+     * balance.
+     */
+    function test_asymmetricSeedStaysFullyCollateralised() public {
+        uint256 id = _newMarketAt(8_500);
+        _assertFullyCollateralised(id, _holders());
+
+        _buy(id, alice, false, 200e6);
+        _assertFullyCollateralised(id, _holders());
+    }
+
+    /// Both ends would collapse the constant product, so they are refused.
+    function test_rejectsOpeningPricesAtTheExtremes() public {
+        for (uint256 i = 0; i < 4; i++) {
+            uint256 bad = [uint256(0), 99, 9_901, 10_000][i];
+            vm.prank(maker);
+            vm.expectRevert(AmmMarket.BadOpeningPrice.selector);
+            market.newMarket(
+                "bad", AmmMarket.Asset.BTC, STRIKE, closeTime, expiryTime, LIQUIDITY, bad
+            );
+        }
+    }
+
+    /**
+     * A market opened away from even money still pays out correctly, and the
+     * maker's own seeded position redeems like anyone else's.
+     */
+    function testFuzz_asymmetricSeedRemainsPayable(uint96 amount, bool isYes, uint16 openingBps)
+        public
+    {
+        vm.assume(amount > 1e6 && amount < 50_000e6);
+        uint256 opening = 100 + (uint256(openingBps) % 9_800);
+
+        uint256 id = _newMarketAt(opening);
+        _buy(id, alice, isYes, amount);
+        _assertFullyCollateralised(id, _holders());
+
+        _settle(id, AmmMarket.Outcome.Yes);
+
+        address[2] memory who = [alice, maker];
+        for (uint256 i = 0; i < who.length; i++) {
+            if (market.yesShares(id, who[i]) == 0) continue;
+            vm.prank(who[i]);
+            market.redeem(id);
+        }
+        // The pool's leftover winning side belongs to the maker, whatever the
+        // market last priced at.
+        (uint256 yesReserve,,) = _pool(id);
+        if (yesReserve > 0) {
+            vm.prank(maker);
+            market.withdrawMakerLiquidity(id);
+        }
+        assertLe(token.balanceOf(address(market)), 3, "left more than rounding dust");
+    }
+
     // --- selling: the exit that makes a locked price mean something ---------
 
     /**
@@ -444,19 +543,19 @@ contract AmmMarketTest is Test {
     function test_newMarket_rejectsZeroLiquidity() public {
         vm.prank(maker);
         vm.expectRevert(AmmMarket.NoLiquidity.selector);
-        market.newMarket("bad", AmmMarket.Asset.BTC, STRIKE, closeTime, expiryTime, 0);
+        market.newMarket("bad", AmmMarket.Asset.BTC, STRIKE, closeTime, expiryTime, 0, 5_000);
     }
 
     function test_newMarket_rejectsZeroStrike() public {
         vm.prank(maker);
         vm.expectRevert(AmmMarket.BadStrike.selector);
-        market.newMarket("bad", AmmMarket.Asset.BTC, 0, closeTime, expiryTime, LIQUIDITY);
+        market.newMarket("bad", AmmMarket.Asset.BTC, 0, closeTime, expiryTime, LIQUIDITY, 5_000);
     }
 
     function test_newMarket_rejectsCloseAfterExpiry() public {
         vm.prank(maker);
         vm.expectRevert(AmmMarket.BadExpiry.selector);
-        market.newMarket("bad", AmmMarket.Asset.BTC, STRIKE, expiryTime + 1, expiryTime, LIQUIDITY);
+        market.newMarket("bad", AmmMarket.Asset.BTC, STRIKE, expiryTime + 1, expiryTime, LIQUIDITY, 5_000);
     }
 
     function test_redeem_rejectsSecondAttempt() public {
