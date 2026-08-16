@@ -253,7 +253,9 @@ export function TradePanel({
             >
               <span>
                 {isAmm && mode === "sell"
-                  ? `Holding ${formatToken(heldShares)} ${side === "yes" ? "Yes" : "No"}`
+                  ? `Holding ${formatToken(heldShares, { symbol: false })} ${
+                      side === "yes" ? "Yes" : "No"
+                    } shares`
                   : `Balance ${formatToken(balance)}`}
               </span>
               <button
@@ -282,7 +284,11 @@ export function TradePanel({
               >
                 <span>{mode === "buy" ? "Shares" : "You receive"}</span>
                 <span style={{ color: "var(--color-text)" }}>
-                  {quotedShares === null ? "—" : formatToken(quotedShares)}
+                  {quotedShares === null
+                    ? "—"
+                    : // Buying returns SHARES, selling returns money. Only one
+                      // of the two is denominated in the token.
+                      formatToken(quotedShares, { symbol: mode === "sell" })}
                 </span>
               </div>
               <div
@@ -339,7 +345,8 @@ export function TradePanel({
 
           {isAmm && mode === "sell" && amount !== null && amount > heldShares ? (
             <div style={{ fontSize: 12, color: "var(--color-negative)" }}>
-              You only hold {formatToken(heldShares)} {side === "yes" ? "Yes" : "No"} shares.
+              You only hold {formatToken(heldShares, { symbol: false })}{" "}
+              {side === "yes" ? "Yes" : "No"} shares.
             </div>
           ) : (
             insufficient &&
@@ -419,8 +426,9 @@ export function TradePanel({
 
       {position && (
         <div className="muted-strong" style={{ fontSize: 11, borderTop: "1px solid var(--color-divider)", paddingTop: "var(--space-2)" }}>
-          {isAmm ? "Your shares" : "Your stake"}: {formatToken(position.yes)} Yes ·{" "}
-          {formatToken(position.no)} No
+          {isAmm ? "Your shares" : "Your stake"}:{" "}
+          {formatToken(position.yes, { symbol: !isAmm })} Yes ·{" "}
+          {formatToken(position.no, { symbol: !isAmm })} No
         </div>
       )}
 

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { derivePositions, deriveTraders } from "./useChainData";
 import { MarketStatus, Outcome, type Market, type StakeEvent } from "../lib/types";
-import { crypto0, flight0, stock0 } from "../lib/identity.test";
+import { amm0, crypto0, flight0, stock0 } from "../lib/identity.test";
 
 /**
  * Portfolio and leaderboard derivation.
@@ -148,6 +148,100 @@ describe("deriveTraders", () => {
     expect(t!.settledMarkets).toBe(2);
     expect(t!.wins).toBe(1);
     // +1 on the won market, -1 on the lost one.
+    expect(t!.profit).toBe(0n);
+  });
+
+  /**
+   * AMM trades reach the leaderboard at all. They emit Bought/Sold rather than
+   * Staked, and reading only Staked left every AMM trade invisible — a
+   * leaderboard silently missing a whole category, which looks complete.
+   */
+  it("counts an AMM buy that wins", () => {
+    const m = { ...amm0, status: MarketStatus.Settled, outcome: Outcome.Yes } as Market;
+    const buy: StakeEvent = {
+      ...stake(m.key, alice, true, 3_000_000n),
+      amm: { direction: "buy", shares: 5_307_692n },
+    };
+
+    const [t] = deriveTraders([m], [buy]);
+    // Paid 3, holds 5.307692 winning shares worth 1 each.
+    expect(t!.profit).toBe(2_307_692n);
+    expect(t!.wins).toBe(1);
+  });
+
+  it("counts an AMM buy that loses as the whole stake", () => {
+    const m = { ...amm0, status: MarketStatus.Settled, outcome: Outcome.No } as Market;
+    const buy: StakeEvent = {
+      ...stake(m.key, alice, true, 3_000_000n),
+      amm: { direction: "buy", shares: 5_307_692n },
+    };
+    expect(deriveTraders([m], [buy])[0]!.profit).toBe(-3_000_000n);
+  });
+
+  /**
+   * Selling before expiry realises a result. Netting the sale off the money in
+   * is what makes a closed position score what it actually made, rather than
+   * nothing — and stops a buy-then-sell round trip reporting double the
+   * capital ever risked.
+   */
+  it("nets an AMM sale off the money put in", () => {
+    const m = { ...amm0, status: MarketStatus.Settled, outcome: Outcome.No } as Market;
+    const events: StakeEvent[] = [
+      { ...stake(m.key, alice, true, 3_000_000n), amm: { direction: "buy", shares: 5_000_000n } },
+      {
+        ...stake(m.key, alice, true, 4_000_000n),
+        blockNumber: 2n,
+        amm: { direction: "sell", shares: 5_000_000n },
+      },
+    ];
+
+    const [t] = deriveTraders([m], events);
+    // Bought for 3, sold for 4, holds nothing: up 1 even though the side lost.
+    expect(t!.profit).toBe(1_000_000n);
+    // Capital at risk came back out, so nothing is still staked.
+    expect(t!.staked).toBe(-1_000_000n + 0n + 0n);
+  });
+
+  it("leaves no position behind after a full round trip", () => {
+    const m = { ...amm0, status: MarketStatus.Settled, outcome: Outcome.Yes } as Market;
+    const events: StakeEvent[] = [
+      { ...stake(m.key, alice, true, 3_000_000n), amm: { direction: "buy", shares: 5_000_000n } },
+      {
+        ...stake(m.key, alice, true, 2_900_000n),
+        blockNumber: 2n,
+        amm: { direction: "sell", shares: 5_000_000n },
+      },
+    ];
+    // Sold everything at a small loss; winning outcome pays nothing extra.
+    expect(deriveTraders([m], events)[0]!.profit).toBe(-100_000n);
+  });
+
+  /** A partial sale leaves the rest of the position to settle normally. */
+  it("handles selling only part of a position", () => {
+    const m = { ...amm0, status: MarketStatus.Settled, outcome: Outcome.Yes } as Market;
+    const events: StakeEvent[] = [
+      { ...stake(m.key, alice, true, 4_000_000n), amm: { direction: "buy", shares: 6_000_000n } },
+      {
+        ...stake(m.key, alice, true, 1_500_000n),
+        blockNumber: 2n,
+        amm: { direction: "sell", shares: 2_000_000n },
+      },
+    ];
+    // In 4, back 1.5, 4m shares left paying 1 each.
+    expect(deriveTraders([m], events)[0]!.profit).toBe(1_500_000n);
+  });
+
+  it("keeps AMM and parimutuel markets separate for one trader", () => {
+    const ammM = { ...amm0, status: MarketStatus.Settled, outcome: Outcome.Yes } as Market;
+    const pariM = resolved(flight0, Outcome.No, 1_000_000n, 1_000_000n);
+    const events: StakeEvent[] = [
+      { ...stake(ammM.key, alice, true, 1_000_000n), amm: { direction: "buy", shares: 2_000_000n } },
+      stake(pariM.key, alice, true, 1_000_000n),
+    ];
+
+    const [t] = deriveTraders([ammM, pariM], events);
+    expect(t!.settledMarkets).toBe(2);
+    // +1 on the AMM market, -1 on the parimutuel one.
     expect(t!.profit).toBe(0n);
   });
 

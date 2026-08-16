@@ -73,10 +73,27 @@ export function derivePositions(
  * truthful reflection of the chain rather than a gap to be padded.
  */
 export function deriveTraders(markets: Market[], stakes: StakeEvent[]): TraderStats[] {
-  const byUser = new Map<
-    Address,
-    { staked: bigint; perMarket: Map<string, { yes: bigint; no: bigint }> }
-  >();
+  /**
+   * Per market, per trader: the position held and the money that changed
+   * hands.
+   *
+   * Parimutuel and AMM cannot share one accumulator. In a parimutuel market
+   * your stake IS your position, so one number does both jobs. In an AMM they
+   * are different quantities in different units — collateral spent versus
+   * shares held — and a sell moves them in opposite directions: the position
+   * shrinks while cash comes back. Adding a sell to "staked" would report
+   * someone who bought and sold as having risked twice as much as they did.
+   */
+  type Book = {
+    /** Shares held (AMM) or collateral staked (parimutuel), per side. */
+    yes: bigint;
+    no: bigint;
+    /** Net collateral put in: buys and stakes less anything sold back. */
+    netIn: bigint;
+    isAmm: boolean;
+  };
+
+  const byUser = new Map<Address, { staked: bigint; perMarket: Map<string, Book> }>();
 
   for (const e of stakes) {
     let rec = byUser.get(e.user);
@@ -84,14 +101,26 @@ export function deriveTraders(markets: Market[], stakes: StakeEvent[]): TraderSt
       rec = { staked: 0n, perMarket: new Map() };
       byUser.set(e.user, rec);
     }
-    rec.staked += e.amount;
-    let pm = rec.perMarket.get(e.marketKey);
-    if (!pm) {
-      pm = { yes: 0n, no: 0n };
-      rec.perMarket.set(e.marketKey, pm);
+
+    let book = rec.perMarket.get(e.marketKey);
+    if (!book) {
+      book = { yes: 0n, no: 0n, netIn: 0n, isAmm: e.amm !== undefined };
+      rec.perMarket.set(e.marketKey, book);
     }
-    if (e.isYes) pm.yes += e.amount;
-    else pm.no += e.amount;
+
+    if (e.amm) {
+      const sign = e.amm.direction === "buy" ? 1n : -1n;
+      if (e.isYes) book.yes += sign * e.amm.shares;
+      else book.no += sign * e.amm.shares;
+      book.netIn += sign * e.amount;
+      // Capital at risk is what is still in, so a sale returns it.
+      rec.staked += sign * e.amount;
+    } else {
+      if (e.isYes) book.yes += e.amount;
+      else book.no += e.amount;
+      book.netIn += e.amount;
+      rec.staked += e.amount;
+    }
   }
 
   // Keyed by composite key, not id: flight 0 and crypto 0 are different
@@ -104,19 +133,20 @@ export function deriveTraders(markets: Market[], stakes: StakeEvent[]): TraderSt
     let wins = 0;
     let settledMarkets = 0;
 
-    for (const [key, pm] of rec.perMarket) {
+    for (const [key, book] of rec.perMarket) {
       const m = marketByKey.get(key);
       if (!m) continue;
-      const isResolved =
-        m.status === MarketStatus.Settled || m.status === MarketStatus.Void;
+      const isResolved = m.status === MarketStatus.Settled || m.status === MarketStatus.Void;
       if (!isResolved) continue;
 
       settledMarkets += 1;
-      const staked = pm.yes + pm.no;
-      const payout = claimablePayout(m, pm.yes, pm.no);
-      profit += payout - staked;
+      // Profit is redemption value less net cash in — which for an AMM already
+      // nets off anything sold back before expiry, so a position closed early
+      // scores its realised result rather than nothing.
+      const payout = claimablePayout(m, book.yes, book.no);
+      profit += payout - book.netIn;
       // A void refunds rather than resolving, so it counts as neither win nor loss.
-      if (m.status === MarketStatus.Settled && payout > staked) wins += 1;
+      if (m.status === MarketStatus.Settled && payout > book.netIn) wins += 1;
     }
 
     out.push({ address, staked: rec.staked, settledMarkets, wins, profit });

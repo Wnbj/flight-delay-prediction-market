@@ -367,13 +367,27 @@ export function Detail({
                     >
                       {shortAddress(e.user)}
                     </a>
-                    <span className="muted">staked {e.isYes ? "Yes" : "No"}</span>
+                    <span className="muted">
+                      {/* An AMM trade is a purchase at a price, and can run in
+                          reverse — calling a sell a "stake" would describe the
+                          opposite of what happened. */}
+                      {e.amm
+                        ? `${e.amm.direction === "buy" ? "bought" : "sold"} ${formatToken(
+                            e.amm.shares,
+                            // Shares are not currency — they are claims that
+                            // pay one unit each if right. Labelling them mUSDC
+                            // states a figure roughly twice the money involved.
+                            { symbol: false },
+                          )} ${e.isYes ? "Yes" : "No"} shares`
+                        : `staked ${e.isYes ? "Yes" : "No"}`}
+                    </span>
                     <a
                       href={txUrl(e.txHash)}
                       target="_blank"
                       rel="noreferrer"
                       style={{ textDecoration: "none" }}
                     >
+                      {e.amm?.direction === "sell" ? "+" : ""}
                       {formatToken(e.amount)}
                     </a>
                   </div>

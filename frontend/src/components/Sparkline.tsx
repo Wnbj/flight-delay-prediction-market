@@ -3,8 +3,10 @@ import type { Market, StakeEvent } from "../lib/types";
 import { impliedYesPercent } from "../lib/parimutuel";
 
 /**
- * Implied-probability history, reconstructed by replaying this market's Staked
- * events in block order. The mockup showed a smooth price curve; a parimutuel
+ * Implied-probability history over this market's own trades, in block order.
+ *
+ * Parimutuel markets are replayed from their pool ratio; AMM markets are read
+ * from the price each trade actually executed at. The mockup showed a smooth price curve; a parimutuel
  * market only moves when someone stakes, so this is a step series and will look
  * sparse until a market has real activity. That sparseness is the truth — it is
  * not padded with synthetic points.
@@ -26,13 +28,27 @@ export function Sparkline({
       .sort((a, b) => Number(a.blockNumber - b.blockNumber));
 
     const series: number[] = [];
-    let yes = 0n;
-    let no = 0n;
-    for (const e of mine) {
-      if (e.isYes) yes += e.amount;
-      else no += e.amount;
-      const total = yes + no;
-      series.push(total === 0n ? 50 : Number((yes * 10000n) / total) / 100);
+
+    // An AMM trade carries the price it executed at — collateral over shares —
+    // so its history is a tape of real prices rather than a pool ratio
+    // replayed. Using the parimutuel replay here would plot the sum of money
+    // traded, which is not a probability at all.
+    if (market.categoryId === "amm") {
+      for (const e of mine) {
+        if (!e.amm || e.amm.shares === 0n) continue;
+        const paidPerShare = Number((e.amount * 10000n) / e.amm.shares) / 100;
+        // A NO trade at 30c is the same information as YES at 70c.
+        series.push(Math.max(0, Math.min(100, e.isYes ? paidPerShare : 100 - paidPerShare)));
+      }
+    } else {
+      let yes = 0n;
+      let no = 0n;
+      for (const e of mine) {
+        if (e.isYes) yes += e.amount;
+        else no += e.amount;
+        const total = yes + no;
+        series.push(total === 0n ? 50 : Number((yes * 10000n) / total) / 100);
+      }
     }
 
     if (series.length === 0) {

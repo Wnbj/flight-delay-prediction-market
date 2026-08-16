@@ -158,14 +158,32 @@ export function priceAssetLabel(m: PriceMarket): string {
   return m.categoryId === "crypto" || m.categoryId === "amm" ? m.asset : m.symbol;
 }
 
+/**
+ * One trade on a market, whichever pricing model it uses.
+ *
+ * `amount` is always COLLATERAL — what left or reached the trader's wallet —
+ * so anything counting money can treat every market alike. What differs is
+ * what the collateral bought: a parimutuel stake buys a claim on a pot, while
+ * an AMM trade buys a fixed number of shares at a price, and can be reversed
+ * by selling them back. Those extras live in `amm` rather than being forced
+ * into the shared fields, because a sell is a NEGATIVE position change and
+ * silently folding it into `amount` would make every total wrong.
+ */
 export interface StakeEvent {
   /** Composite market key — see MarketBase.key. */
   marketKey: string;
   user: `0x${string}`;
   isYes: boolean;
+  /** Collateral. Spent on a stake or a buy; RECEIVED on an AMM sell. */
   amount: bigint;
   blockNumber: bigint;
   txHash: `0x${string}`;
+  /** Present only for AMM trades. */
+  amm?: {
+    direction: "buy" | "sell";
+    /** Shares gained on a buy, given up on a sell. */
+    shares: bigint;
+  };
 }
 
 export interface SettledEvent {

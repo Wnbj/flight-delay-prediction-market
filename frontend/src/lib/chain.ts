@@ -496,6 +496,15 @@ export async function readAllowance(user: Address, spender: Address): Promise<bi
 const STAKED_EVENT = parseAbiItem(
   "event Staked(uint256 indexed marketId, address indexed user, bool isYes, uint256 amount)",
 );
+// The AMM does not emit Staked at all — you buy shares at a price rather than
+// join a pool, and you can sell them back. Reading only Staked left every AMM
+// trade invisible to the leaderboard, the activity feed and the sparkline.
+const BOUGHT_EVENT = parseAbiItem(
+  "event Bought(uint256 indexed marketId, address indexed buyer, bool isYes, uint256 collateralIn, uint256 sharesOut)",
+);
+const SOLD_EVENT = parseAbiItem(
+  "event Sold(uint256 indexed marketId, address indexed seller, bool isYes, uint256 sharesIn, uint256 collateralOut)",
+);
 // Both contracts emit Staked identically. Settled differs: the flight contract
 // predates the shared base and still declares int32, the base uses int256.
 const FLIGHT_SETTLED_EVENT = parseAbiItem(
@@ -544,13 +553,61 @@ export async function readStakeEvents(): Promise<StakeEvent[]> {
       })),
     );
 
-  const [flights, crypto, stocks, reserves] = await Promise.all([
+  const readAmm = async (): Promise<StakeEvent[]> => {
+    const [bought, sold] = await Promise.all([
+      logsInChunks((fromBlock, toBlock) =>
+        publicClient.getLogs({
+          address: AMM_MARKET_ADDRESS,
+          event: BOUGHT_EVENT,
+          fromBlock,
+          toBlock,
+        }),
+      ),
+      logsInChunks((fromBlock, toBlock) =>
+        publicClient.getLogs({
+          address: AMM_MARKET_ADDRESS,
+          event: SOLD_EVENT,
+          fromBlock,
+          toBlock,
+        }),
+      ),
+    ]);
+
+    return [
+      ...bought.map((l) => ({
+        marketKey: marketKey("amm", Number(l.args.marketId!)),
+        user: l.args.buyer!,
+        isYes: l.args.isYes!,
+        amount: l.args.collateralIn!,
+        blockNumber: l.blockNumber!,
+        txHash: l.transactionHash!,
+        amm: { direction: "buy" as const, shares: l.args.sharesOut! },
+      })),
+      ...sold.map((l) => ({
+        marketKey: marketKey("amm", Number(l.args.marketId!)),
+        user: l.args.seller!,
+        isYes: l.args.isYes!,
+        // Collateral RECEIVED, not spent — see StakeEvent.
+        amount: l.args.collateralOut!,
+        blockNumber: l.blockNumber!,
+        txHash: l.transactionHash!,
+        amm: { direction: "sell" as const, shares: l.args.sharesIn! },
+      })),
+    ];
+  };
+
+  const [flights, crypto, stocks, reserves, amm] = await Promise.all([
     read(MARKET_ADDRESS, "flights"),
     read(CRYPTO_MARKET_ADDRESS, "crypto"),
     read(STOCK_MARKET_ADDRESS, "stocks"),
     read(RESERVE_MARKET_ADDRESS, "reserves"),
+    readAmm(),
   ]);
-  return [...flights, ...crypto, ...stocks, ...reserves];
+  // Sorted so a replay sees trades in the order they happened, across
+  // contracts — buys and sells interleave and order changes the result.
+  return [...flights, ...crypto, ...stocks, ...reserves, ...amm].sort((a, b) =>
+    a.blockNumber === b.blockNumber ? 0 : a.blockNumber < b.blockNumber ? -1 : 1,
+  );
 }
 
 export async function readSettledEvents(): Promise<SettledEvent[]> {
