@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import type { Address } from "viem";
 import {
   readAllowance,
+  readAmmSeeds,
   readMarkets,
   readSettledEvents,
   readStakeEvents,
@@ -11,6 +12,7 @@ import {
 import { claimablePayout } from "../lib/parimutuel";
 import {
   MarketStatus,
+  Outcome,
   type Market,
   type Position,
   type SettledEvent,
@@ -43,6 +45,12 @@ export function derivePositions(
    */
   trades: StakeEvent[] = [],
   account: Address | null = null,
+  /**
+   * What each AMM market was seeded with. Needed because seeding is the
+   * maker's purchase and emits no trade: without it their position prices at
+   * zero and reports as pure profit.
+   */
+  ammSeeds: Map<string, bigint> = new Map(),
 ): Position[] {
   const netInByMarket = new Map<string, bigint>();
   for (const e of trades) {
@@ -57,9 +65,30 @@ export function derivePositions(
     const s = stakes.get(m.key);
     if (!s || (s.yes === 0n && s.no === 0n)) return;
 
-    const entitlement = claimablePayout(m, s.yes, s.no);
+    let entitlement = claimablePayout(m, s.yes, s.no);
+    let cost = m.categoryId === "amm" ? (netInByMarket.get(m.key) ?? 0n) : s.yes + s.no;
+
+    /**
+     * The maker is not an ordinary holder. They paid `liquidity` for two
+     * things: the shares they kept and a claim on whatever of the winning side
+     * the pool still holds. Counting only the kept shares would show them
+     * hugely up when the market opened away from even money, and counting only
+     * the pool would miss the position their own price implied.
+     */
+    if (
+      m.categoryId === "amm" &&
+      account &&
+      m.maker.toLowerCase() === account.toLowerCase()
+    ) {
+      cost += ammSeeds.get(m.key) ?? 0n;
+      if (m.status === MarketStatus.Void) {
+        entitlement += (m.yesReserve + m.noReserve) / 2n;
+      } else if (m.status === MarketStatus.Settled) {
+        entitlement += m.outcome === Outcome.Yes ? m.yesReserve : m.noReserve;
+      }
+    }
+
     const claimable = s.claimed ? 0n : entitlement;
-    const cost = m.categoryId === "amm" ? (netInByMarket.get(m.key) ?? 0n) : s.yes + s.no;
 
     let status: Position["status"];
     if (s.claimed) status = "Claimed";
@@ -196,9 +225,10 @@ export function useChainData(account: Address | null): ChainData {
       const ms = await readMarkets();
       setMarkets(ms);
 
-      const [se, sv] = await Promise.all([
+      const [se, sv, seeds] = await Promise.all([
         readStakeEvents().catch(() => null),
         readSettledEvents().catch(() => null),
+        readAmmSeeds().catch(() => new Map<string, bigint>()),
       ]);
       if (se) setStakeEvents(se);
       if (sv) setSettledEvents(sv);
@@ -212,7 +242,7 @@ export function useChainData(account: Address | null): ChainData {
           readTokenBalance(account),
           Promise.all(spenders.map((s) => readAllowance(account, s))),
         ]);
-        setPositions(derivePositions(ms, stakes, se ?? [], account));
+        setPositions(derivePositions(ms, stakes, se ?? [], account, seeds));
         setBalance(bal);
         setAllowances(new Map(spenders.map((s, i) => [s, allows[i]!])));
       } else {

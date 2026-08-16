@@ -502,6 +502,9 @@ const STAKED_EVENT = parseAbiItem(
 const BOUGHT_EVENT = parseAbiItem(
   "event Bought(uint256 indexed marketId, address indexed buyer, bool isYes, uint256 collateralIn, uint256 sharesOut)",
 );
+const MARKET_CREATED_EVENT = parseAbiItem(
+  "event MarketCreated(uint256 indexed marketId, uint8 asset, uint64 strikePrice, uint64 expiryTime, uint256 liquidity)",
+);
 const SOLD_EVENT = parseAbiItem(
   "event Sold(uint256 indexed marketId, address indexed seller, bool isYes, uint256 sharesIn, uint256 collateralOut)",
 );
@@ -607,6 +610,28 @@ export async function readStakeEvents(): Promise<StakeEvent[]> {
   // contracts — buys and sells interleave and order changes the result.
   return [...flights, ...crypto, ...stocks, ...reserves, ...amm].sort((a, b) =>
     a.blockNumber === b.blockNumber ? 0 : a.blockNumber < b.blockNumber ? -1 : 1,
+  );
+}
+
+/**
+ * What each AMM market was seeded with, by market key.
+ *
+ * Seeding is the maker's purchase — it costs them `liquidity` and gives them a
+ * pool plus, when the market opens away from even money, shares of their own.
+ * But it emits no Bought event, so a cost basis built from trades alone prices
+ * the maker's position at zero and reports it as pure profit.
+ */
+export async function readAmmSeeds(): Promise<Map<string, bigint>> {
+  const logs = await logsInChunks((fromBlock, toBlock) =>
+    publicClient.getLogs({
+      address: AMM_MARKET_ADDRESS,
+      event: MARKET_CREATED_EVENT,
+      fromBlock,
+      toBlock,
+    }),
+  );
+  return new Map(
+    logs.map((l) => [marketKey("amm", Number(l.args.marketId!)), l.args.liquidity!]),
   );
 }
 

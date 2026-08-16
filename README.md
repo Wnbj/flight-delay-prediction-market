@@ -168,7 +168,7 @@ export PATH="$HOME/.local/share/cre/bin:$HOME/.bun/bin:$HOME/.foundry/bin:$PATH"
 
 ```bash
 cd contracts && forge test                     # 140 tests
-cd frontend  && bun install && bun run test    # 97 tests
+cd frontend  && bun install && bun run test    # 101 tests
 cd frontend  && bun run dev                    # the app, against live Sepolia
 cd cre/settlement && bun test # 35 tests
 ```

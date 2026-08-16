@@ -154,6 +154,55 @@ describe("derivePositions — cost basis", () => {
     expect(p!.cost).toBe(3_000_000n);
   });
 
+  /**
+   * The maker's position has no trade behind it. Seeding is their purchase —
+   * it costs `liquidity` and, when the market opens away from even money,
+   * hands them shares of their own — but emits no Bought event. Pricing that
+   * from trades alone reported it as pure profit out of nothing.
+   */
+  it("charges the maker what they seeded, even with no trades at all", () => {
+    const m = { ...ammMarket, maker: alice } as Market;
+    const seeds = new Map([[m.key, 40_000_000n]]);
+    // Opened at 85%, so the maker kept YES and the pool took the rest.
+    const [p] = derivePositions([m], held(32_941_177n, 0n), [], alice, seeds);
+
+    expect(p!.cost).toBe(40_000_000n);
+  });
+
+  it("adds the seed on top of the maker's own later trades", () => {
+    const m = { ...ammMarket, maker: alice } as Market;
+    const seeds = new Map([[m.key, 40_000_000n]]);
+    const trades = [trade("buy", 10_000_000n, 19_090_909n)];
+    const [p] = derivePositions([m], held(52_032_086n, 0n), trades, alice, seeds);
+
+    expect(p!.cost).toBe(50_000_000n);
+  });
+
+  /**
+   * The maker is owed the pool's remaining winning side as well as their own
+   * shares — counting only the shares would show them down by the whole pool.
+   */
+  it("counts the pool's winning reserve towards the maker's entitlement", () => {
+    const m = { ...ammMarket, maker: alice, yesReserve: 7_058_823n } as Market;
+    const seeds = new Map([[m.key, 40_000_000n]]);
+    const [p] = derivePositions([m], held(32_941_177n, 0n), [], alice, seeds);
+
+    // 32.941177 kept + 7.058823 still in the pool = the whole 40 minted.
+    expect(p!.entitlement).toBe(40_000_000n);
+    expect(p!.entitlement - p!.cost).toBe(0n);
+  });
+
+  /** Somebody who merely traded is not the maker and owes nothing for a seed. */
+  it("does not charge a plain trader for the maker's seed", () => {
+    const m = { ...ammMarket, maker: bob } as Market;
+    const seeds = new Map([[m.key, 40_000_000n]]);
+    const trades = [trade("buy", 3_000_000n, 5_000_000n)];
+    const [p] = derivePositions([m], held(5_000_000n, 0n), trades, alice, seeds);
+
+    expect(p!.cost).toBe(3_000_000n);
+    expect(p!.entitlement).toBe(5_000_000n);
+  });
+
   it("reports zero cost when the trade history could not be loaded", () => {
     // Events are allowed to fail independently of markets, so this must not
     // throw — it just cannot price the position.

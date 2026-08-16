@@ -872,7 +872,7 @@ there is no event title on chain.
 | suite | count | command |
 |---|---|---|
 | contracts | 140 | `cd contracts && forge test` |
-| frontend | 97 | `cd frontend && bun run test` |
+| frontend | 101 | `cd frontend && bun run test` |
 | workflow | 35 | `cd cre/settlement && bun test` |
 
 The frontend and workflow suites were added after a routing bug reached a
