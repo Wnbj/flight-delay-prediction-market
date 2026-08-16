@@ -829,13 +829,20 @@ view of where the price will land. An AMM quotes a price from the moment it
 opens; parimutuel rungs read "no odds yet" until somebody stakes, so a ladder of
 five of them is a column of blanks.
 
-### A fresh ladder is flat, and that is not a bug
+### Ladders open at real prices, not at even money
 
-Seeding an AMM market mints equal reserves — the maker takes no view — so every
-rung opens at exactly 50%, whatever its strike. Five rungs all reading 50% say
-nothing, so the live ladder was shaped by actually trading each rung to a target
-probability. The prices are real trades against the curve, not a number written
-into a field:
+`newMarket` takes an opening price. The pool holds reserves in the ratio
+`(1-p):p` and the maker keeps the remainder of the other side — a real
+position, which is what having a view means.
+
+Before this, seeding always minted equal reserves, so every rung opened at 50%
+whatever its strike. Five rungs all reading 50% say nothing; the shape IS the
+information. The only way to get one was to trade each rung by hand at
+`L·(sqrt(p/(1-p)) - 1)`, which cost ~178 mUSDC against 200 of liquidity, and
+the far strikes cost multiples of the near ones — exactly backwards.
+
+The live ladder is now seeded straight to these prices with no trades at all,
+landing on each target exactly:
 
 | strike | yes | no |
 |---|---|---|
@@ -845,9 +852,9 @@ into a field:
 | $63,250 | 25% | 75% |
 | $63,500 | 12% | 88% |
 
-Reaching a target price `p` from an even start with liquidity `L` costs
-`L·(sqrt(p/(1-p)) − 1)` — which is why the far rungs cost multiples of the near
-ones, and why a real venue seeds asymmetric reserves instead.
+The maker ends up holding 32.94 YES at the $62,500 rung and 34.55 NO at the
+$63,500 one — long whichever side they priced as likely, at both ends. Quoting
+a price is not free, and it no longer looks free.
 
 ### Which rung the card shows
 
@@ -864,7 +871,7 @@ there is no event title on chain.
 
 | suite | count | command |
 |---|---|---|
-| contracts | 134 | `cd contracts && forge test` |
+| contracts | 140 | `cd contracts && forge test` |
 | frontend | 97 | `cd frontend && bun run test` |
 | workflow | 35 | `cd flight-market/flight-settlement && bun test` |
 

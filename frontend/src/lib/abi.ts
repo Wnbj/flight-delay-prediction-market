@@ -2650,6 +2650,11 @@ export const ammMarketAbi = [
           "name": "liquidity",
           "type": "uint256",
           "internalType": "uint256"
+        },
+        {
+          "name": "openingYesPriceBps",
+          "type": "uint256",
+          "internalType": "uint256"
         }
       ],
       "outputs": [
@@ -3200,6 +3205,11 @@ export const ammMarketAbi = [
     {
       "type": "error",
       "name": "BadExpiry",
+      "inputs": []
+    },
+    {
+      "type": "error",
+      "name": "BadOpeningPrice",
       "inputs": []
     },
     {

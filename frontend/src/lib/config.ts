@@ -18,7 +18,7 @@ export const RESERVE_MARKET_ADDRESS = (import.meta.env.VITE_RESERVE_MARKET_ADDRE
   "0xa768Be2741A0464b81606649eCa45bfF7aD4d939") as `0x${string}`;
 
 export const AMM_MARKET_ADDRESS = (import.meta.env.VITE_AMM_MARKET_ADDRESS ??
-  "0x63Dd7885Ed1A022e5eF82da45295DEFf1F30ca53") as `0x${string}`;
+  "0x21A26cC7f7A5035330257aA61e44549BE30f4801") as `0x${string}`;
 
 export const TOKEN_ADDRESS = (import.meta.env.VITE_TOKEN_ADDRESS ??
   "0xcd123a8d74ef062dddd2287e87bc88eb3b208b54") as `0x${string}`;
