@@ -673,6 +673,125 @@ A further step after that is the **confidential HTTP** capability
 (`networking/confidentialhttp`), which templates the secret into the request on
 the node rather than passing it through workflow memory as a string.
 
+## Reserve markets (Proof of Reserve / fund NAV)
+
+`ReserveMarket.sol` at `0xa768Be2741A0464b81606649eCa45bfF7aD4d939`, with stETH
+Proof of Reserves, USDW Reserves and USTB NAV registered.
+
+**A separate contract from StockMarket, not a flag on it.** StockMarket voids
+unless the feed's answer changed between close and expiry — right for an
+equity, where an unchanged answer over a session means the exchange was shut.
+A reserve has no session: deposits and redemptions land at any hour, and
+reserves sitting still for a day is ordinary rather than proof the outcome was
+already fixed. ReserveMarket does not even emit `closeTime`, so the workflow
+cannot apply that check by accident. **Staleness is the load-bearing guard
+here**, so `maxStaleness` should be set tight against the feed's heartbeat.
+
+Splitting by contract also avoided orphaning the live CSPX market, which has
+stakes on it and settles Monday; redeploying StockMarket would have taken it.
+
+### Feeds do not agree on decimals
+
+Assuming 8 is wrong in both directions, measured on Sepolia:
+
+| feed | decimals | raw answer | read as 8 decimals |
+|---|---|---|---|
+| CSPX/USD | 8 | `83869000000` | correct |
+| USTB NAV | 6 | `11177748` | $0.11 instead of $11.18 |
+| stETH PoR | 18 | `9505650857465828722927470` | **does not fit uint64 at all** |
+
+The workflow reads `decimals()` from the feed and normalises to the 8 that
+strikes, reports and the UI all use. **Movement is still checked on the raw
+answers**, before rescaling — an 18-decimal feed can move in a digit that
+normalising truncates away, and truncation must never turn a real move into
+"nothing happened".
+
+Verified against real rounds: the stETH answer settled to `950565085746582`,
+or 9,505,650.85746582 tokens, which is what the feed reports.
+
+The same three assumptions were wrong in the frontend and were fixed with it:
+`PriceChart` looked for a feed on `stocks` only so reserve markets got no chart
+at all; the chart divided every answer by `1e8`; and values were formatted with
+a `$` when a reserve level is a count of tokens, not dollars.
+
+## AMM markets — a locked price instead of a pool
+
+`AmmMarket.sol` at `0xdc866C24Af158E55C1c424dc81d69f9F668dF27a`.
+
+In the parimutuel contracts you do not buy at a price, you join a pool: your
+share of the pot is fixed only at settlement, so every later stake on your own
+side dilutes you through nothing you did. Here a buy gives you a fixed number
+of shares, each redeemable for one unit of collateral if you are right. Your
+price is what you paid.
+
+### Solvency is structural, not tested-for
+
+Collateral only enters by minting **complete sets** — one unit in mints one YES
+and one NO — so at all times:
+
+```
+totalYesShares == totalNoShares == collateral held
+```
+
+Every share, in the pool or in a wallet, is backed by its own unit. Buys use
+ceiling division so the constant product may only grow: any rounding error
+favours the pool, never the buyer.
+
+### The bug the fuzz suite could not see
+
+The first version paid **both** sides a full unit on a void. One unit of
+collateral mints one YES *and* one NO, so honouring both at par promises two
+units for every one held — the test failed with `ERC20InsufficientBalance`.
+
+The fuzz suite missed it because it only fuzzed Yes and No, and those only ever
+pay one side. The void case had to be fuzzed for it to surface.
+
+A void now pays **half a unit per share, either side** — the only split that
+keeps the invariant and treats both sides alike. It is deliberately **not a
+refund**: someone who bought YES at 70 cents gets 50 back. Share balances do
+not record what anyone paid, so a true refund is not recoverable from them and
+pretending otherwise would be insolvent.
+
+### One liquidity provider, who is the counterparty
+
+Multi-LP means LP tokens, proportional withdrawal and impermanent loss — a
+large surface where mistakes are silent. The creator seeds the market and
+redeems whatever of the winning side the pool still holds. If traders were
+right, they recover less than they put in; that shortfall is exactly what
+funded the traders' profit, and it is bounded by the seed. Two tests pin both
+directions.
+
+### Settlement reuses the crypto handler
+
+`SettlementRequested` is byte-identical to CryptoMarket's, so this contract
+joins that trigger's **address list** rather than needing a handler of its own.
+
+That exposed a latent bug: the handler wrote its report back to a *config*
+address, which would have delivered one contract's result to the other. It now
+replies to the contract the log came from.
+
+```bash
+forge script script/DeployAmm.s.sol:DeployAmm --rpc-url $SEPOLIA_RPC_URL --broadcast
+```
+
+Live on Sepolia: opened at `5000` bps, a 3 mUSDC buy returned exactly the
+quoted 5,307,692 shares — 56.5 cents each — and moved the price to `6282`.
+
+## Tests
+
+| suite | count | command |
+|---|---|---|
+| contracts | 122 | `cd contracts && forge test` |
+| frontend | 60 | `cd frontend && bun run test` |
+| workflow | 35 | `cd flight-market/flight-settlement && bun test` |
+
+The frontend and workflow suites were added after a routing bug reached a
+user: writes branched on `categoryId` with the flight contract as the else, so
+every stock stake was delivered to FlightMarket and landed on a real,
+unrelated market. It passed typecheck, passed build, passed manual browser
+testing. The tests were confirmed by reintroducing it — three fail, with
+`expected 2 to be 3` on the count of distinct destinations.
+
 ## Appendix: free local rehearsal via anvil fork
 
 Before spending real Sepolia ETH, the same flow can run against a local anvil
