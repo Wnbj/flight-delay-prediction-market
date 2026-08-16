@@ -1,5 +1,5 @@
 import { formatMarketValue, formatPercent } from "../lib/format";
-import { impliedYesPercent } from "../lib/parimutuel";
+import { impliedYesPercent } from "../lib/pricing";
 import { isPriceMarket } from "../lib/types";
 import type { MarketEvent } from "../lib/events";
 

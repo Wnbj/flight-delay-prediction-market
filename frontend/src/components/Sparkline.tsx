@@ -1,6 +1,6 @@
 import { useMemo } from "react";
-import type { Market, StakeEvent } from "../lib/types";
-import { impliedYesPercent } from "../lib/parimutuel";
+import type { Market, TradeEvent } from "../lib/types";
+import { impliedYesPercent } from "../lib/pricing";
 
 /**
  * Implied-probability history over this market's own trades, in block order.
@@ -18,7 +18,7 @@ export function Sparkline({
   strokeWidth = 2,
 }: {
   market: Market;
-  events: StakeEvent[];
+  events: TradeEvent[];
   height?: number;
   strokeWidth?: number;
 }) {

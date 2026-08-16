@@ -146,15 +146,22 @@ new address and orphaned markets. It moves whenever it is next redeployed.
 
 ## What was about to happen next
 
-Nothing was half-finished. The last commit closed a bug rather than opening
-work, so the natural next steps in rough order of value:
+Nothing is half-finished. Multi-LP is built, deployed and exercised end to end,
+and the naming tidy-ups are done: `lib/parimutuel.ts` is now `lib/pricing.ts`
+(with `outcomeLabel`/`statusLabel` moved to `format.ts`, where display belongs),
+and `StakeEvent`/`readStakeEvents` are `TradeEvent`/`readTradeEvents`.
 
-1. **Watch CSPX settle** tomorrow evening — the last unverified path.
-2. **Multi-LP for the AMM**, if the goal is to push the AMM toward something
-   real rather than illustrative.
-3. Small tidy-ups that were noticed and left: `lib/parimutuel.ts` now holds
-   AMM-aware maths and `StakeEvent` / `readStakeEvents` now carry AMM buys and
-   sells, so both names undersell what they do.
+The natural next steps, in rough order of value:
+
+1. **Watch CSPX settle** — Monday, closes 08:00 UTC, settleable from 20:30 UTC.
+   Still the last unverified path and the only qualitatively new thing left:
+   an equity resolving across a real trading session, so the "did the answer
+   change?" guard is exercised for real rather than in a test.
+2. **Collect the remaining 160 mUSDC** from rungs 0, 1, 3 and 4 of the settled
+   ladder, if you want the contract clean. Nothing depends on it.
+3. **`FlightMarket` still does not inherit `ParimutuelMarket`** — it holds live
+   positions and is wired to the frontend by its exact ABI, so it moves whenever
+   it is next redeployed.
 
 ---
 

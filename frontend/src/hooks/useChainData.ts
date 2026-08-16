@@ -5,12 +5,12 @@ import {
   readLpEvents,
   readMarkets,
   readSettledEvents,
-  readStakeEvents,
+  readTradeEvents,
   readTokenBalance,
   readWalletLp,
   readWalletStakes,
 } from "../lib/chain";
-import { claimablePayout } from "../lib/parimutuel";
+import { claimablePayout } from "../lib/pricing";
 import { attributeFees, buildLpPosition, depositsByMarket } from "../lib/lp";
 import {
   MarketStatus,
@@ -19,13 +19,13 @@ import {
   type Market,
   type Position,
   type SettledEvent,
-  type StakeEvent,
+  type TradeEvent,
   type TraderStats,
 } from "../lib/types";
 
 export interface ChainData {
   markets: Market[];
-  stakeEvents: StakeEvent[];
+  tradeEvents: TradeEvent[];
   settledEvents: SettledEvent[];
   lpEvents: LpEvent[];
   positions: Position[];
@@ -53,7 +53,7 @@ export function derivePositions(
    * records the shares you hold, not what you paid for them, and a sale
    * returns collateral without leaving a trace in the balance.
    */
-  trades: StakeEvent[] = [],
+  trades: TradeEvent[] = [],
   account: Address | null = null,
   /**
    * Liquidity movements. Needed because providing liquidity emits no trade:
@@ -155,7 +155,7 @@ export function derivePositions(
  */
 export function deriveTraders(
   markets: Market[],
-  stakes: StakeEvent[],
+  stakes: TradeEvent[],
   /**
    * Liquidity movements. Without them a provider who never traded does not
    * appear on the leaderboard at all, however much they put at risk — and
@@ -284,7 +284,7 @@ export function deriveTraders(
 
 export function useChainData(account: Address | null): ChainData {
   const [markets, setMarkets] = useState<Market[]>([]);
-  const [stakeEvents, setStakeEvents] = useState<StakeEvent[]>([]);
+  const [tradeEvents, setTradeEvents] = useState<TradeEvent[]>([]);
   const [settledEvents, setSettledEvents] = useState<SettledEvent[]>([]);
   const [lpEvents, setLpEvents] = useState<LpEvent[]>([]);
   const [positions, setPositions] = useState<Position[]>([]);
@@ -312,11 +312,11 @@ export function useChainData(account: Address | null): ChainData {
       setFailedCategories(failed);
 
       const [se, sv, lp] = await Promise.all([
-        readStakeEvents().catch(() => null),
+        readTradeEvents().catch(() => null),
         readSettledEvents().catch(() => null),
         readLpEvents().catch(() => [] as LpEvent[]),
       ]);
-      if (se) setStakeEvents(se);
+      if (se) setTradeEvents(se);
       if (sv) setSettledEvents(sv);
       setLpEvents(lp);
       setHistoryDegraded(se === null || sv === null);
@@ -352,7 +352,7 @@ export function useChainData(account: Address | null): ChainData {
 
   return {
     markets,
-    stakeEvents,
+    tradeEvents,
     settledEvents,
     lpEvents,
     positions,

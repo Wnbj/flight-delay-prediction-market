@@ -1,14 +1,14 @@
 import { useEffect, useState } from "react";
 import type { Address } from "viem";
 import { TOKEN_SYMBOL, txUrl } from "../lib/config";
-import { formatToken, parseToken } from "../lib/format";
+import { formatToken, parseToken, statusLabel } from "../lib/format";
 import {
   estimatePayout,
   impliedYesPercent,
   isOpenForStaking,
   canRequestSettlement,
-  statusLabel,
-} from "../lib/parimutuel";
+
+} from "../lib/pricing";
 import {
   quoteAmmSell,
   quoteAmmShares,

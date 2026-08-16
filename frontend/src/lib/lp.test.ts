@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { attributeFees, buildLpPosition, lpPnl, markPoolValue, markShares } from "./lp";
-import { MarketStatus, Outcome, type LpEvent, type Market, type StakeEvent } from "./types";
+import { MarketStatus, Outcome, type LpEvent, type Market, type TradeEvent } from "./types";
 import { amm0 } from "./identity.test";
 
 /**
@@ -35,7 +35,7 @@ const deposit = (
   txHash: "0x00",
 });
 
-const trade = (fee: bigint, blockNumber: bigint): StakeEvent => ({
+const trade = (fee: bigint, blockNumber: bigint): TradeEvent => ({
   marketKey: key,
   user: bob,
   isYes: true,

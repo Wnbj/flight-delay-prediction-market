@@ -5,7 +5,7 @@ import {
   Outcome,
   type LpEvent,
   type Market,
-  type StakeEvent,
+  type TradeEvent,
 } from "../lib/types";
 import { amm0, crypto0, flight0, stock0 } from "../lib/identity.test";
 
@@ -21,7 +21,7 @@ import { amm0, crypto0, flight0, stock0 } from "../lib/identity.test";
 const alice = "0x00000000000000000000000000000000000a11ce" as const;
 const bob = "0x0000000000000000000000000000000000000b0b" as const;
 
-const stake = (marketKey: string, user: string, isYes: boolean, amount: bigint): StakeEvent => ({
+const stake = (marketKey: string, user: string, isYes: boolean, amount: bigint): TradeEvent => ({
   marketKey,
   user: user as `0x${string}`,
   isYes,
@@ -115,7 +115,7 @@ describe("derivePositions — cost basis", () => {
     shares: bigint,
     block = 1n,
     fee = 0n,
-  ): StakeEvent => ({
+  ): TradeEvent => ({
     ...stake(ammMarket.key, alice, true, collateral),
     blockNumber: block,
     amm: { direction, shares, fee },
@@ -181,7 +181,7 @@ describe("derivePositions — cost basis", () => {
   /** Somebody else's trades must never be priced into this wallet's position. */
   it("ignores trades by other wallets", () => {
     const mine = trade("buy", 3_000_000n, 5_000_000n);
-    const theirs: StakeEvent = { ...trade("buy", 9_000_000n, 9_000_000n, 2n), user: bob };
+    const theirs: TradeEvent = { ...trade("buy", 9_000_000n, 9_000_000n, 2n), user: bob };
     const [p] = derivePositions([ammMarket], held(5_000_000n, 0n), [mine, theirs], alice);
     expect(p!.cost).toBe(3_000_000n);
   });
@@ -387,7 +387,7 @@ describe("deriveTraders", () => {
    */
   it("counts an AMM buy that wins", () => {
     const m = { ...amm0, status: MarketStatus.Settled, outcome: Outcome.Yes } as Market;
-    const buy: StakeEvent = {
+    const buy: TradeEvent = {
       ...stake(m.key, alice, true, 3_000_000n),
       amm: { direction: "buy", shares: 5_307_692n, fee: 0n },
     };
@@ -400,7 +400,7 @@ describe("deriveTraders", () => {
 
   it("counts an AMM buy that loses as the whole stake", () => {
     const m = { ...amm0, status: MarketStatus.Settled, outcome: Outcome.No } as Market;
-    const buy: StakeEvent = {
+    const buy: TradeEvent = {
       ...stake(m.key, alice, true, 3_000_000n),
       amm: { direction: "buy", shares: 5_307_692n, fee: 0n },
     };
@@ -415,7 +415,7 @@ describe("deriveTraders", () => {
    */
   it("nets an AMM sale off the money put in", () => {
     const m = { ...amm0, status: MarketStatus.Settled, outcome: Outcome.No } as Market;
-    const events: StakeEvent[] = [
+    const events: TradeEvent[] = [
       { ...stake(m.key, alice, true, 3_000_000n), amm: { direction: "buy", shares: 5_000_000n, fee: 0n } },
       {
         ...stake(m.key, alice, true, 4_000_000n),
@@ -433,7 +433,7 @@ describe("deriveTraders", () => {
 
   it("leaves no position behind after a full round trip", () => {
     const m = { ...amm0, status: MarketStatus.Settled, outcome: Outcome.Yes } as Market;
-    const events: StakeEvent[] = [
+    const events: TradeEvent[] = [
       { ...stake(m.key, alice, true, 3_000_000n), amm: { direction: "buy", shares: 5_000_000n, fee: 0n } },
       {
         ...stake(m.key, alice, true, 2_900_000n),
@@ -448,7 +448,7 @@ describe("deriveTraders", () => {
   /** A partial sale leaves the rest of the position to settle normally. */
   it("handles selling only part of a position", () => {
     const m = { ...amm0, status: MarketStatus.Settled, outcome: Outcome.Yes } as Market;
-    const events: StakeEvent[] = [
+    const events: TradeEvent[] = [
       { ...stake(m.key, alice, true, 4_000_000n), amm: { direction: "buy", shares: 6_000_000n, fee: 0n } },
       {
         ...stake(m.key, alice, true, 1_500_000n),
@@ -463,7 +463,7 @@ describe("deriveTraders", () => {
   it("keeps AMM and parimutuel markets separate for one trader", () => {
     const ammM = { ...amm0, status: MarketStatus.Settled, outcome: Outcome.Yes } as Market;
     const pariM = resolved(flight0, Outcome.No, 1_000_000n, 1_000_000n);
-    const events: StakeEvent[] = [
+    const events: TradeEvent[] = [
       { ...stake(ammM.key, alice, true, 1_000_000n), amm: { direction: "buy", shares: 2_000_000n, fee: 0n } },
       stake(pariM.key, alice, true, 1_000_000n),
     ];

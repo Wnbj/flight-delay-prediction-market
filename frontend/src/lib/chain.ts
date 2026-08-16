@@ -32,7 +32,7 @@ import {
   type LpEvent,
   type Market,
   type SettledEvent,
-  type StakeEvent,
+  type TradeEvent,
 } from "./types";
 
 export const publicClient = createPublicClient({
@@ -653,7 +653,7 @@ async function logsInChunks<T>(
   return out;
 }
 
-export async function readStakeEvents(): Promise<StakeEvent[]> {
+export async function readTradeEvents(): Promise<TradeEvent[]> {
   const read = (address: `0x${string}`, categoryId: string) =>
     logsInChunks((fromBlock, toBlock) =>
       publicClient.getLogs({ address, event: STAKED_EVENT, fromBlock, toBlock }),
@@ -668,7 +668,7 @@ export async function readStakeEvents(): Promise<StakeEvent[]> {
       })),
     );
 
-  const readAmm = async (): Promise<StakeEvent[]> => {
+  const readAmm = async (): Promise<TradeEvent[]> => {
     const [bought, sold] = await Promise.all([
       logsInChunks((fromBlock, toBlock) =>
         publicClient.getLogs({
@@ -702,7 +702,7 @@ export async function readStakeEvents(): Promise<StakeEvent[]> {
         marketKey: marketKey("amm", Number(l.args.marketId!)),
         user: l.args.seller!,
         isYes: l.args.isYes!,
-        // Collateral RECEIVED, not spent — see StakeEvent.
+        // Collateral RECEIVED, not spent — see TradeEvent.
         amount: l.args.collateralOut!,
         blockNumber: l.blockNumber!,
         txHash: l.transactionHash!,

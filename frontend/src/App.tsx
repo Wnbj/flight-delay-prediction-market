@@ -154,7 +154,7 @@ export default function App() {
           {view === "landing" && (
             <Landing
               markets={data.markets}
-              stakeEvents={data.stakeEvents}
+              tradeEvents={data.tradeEvents}
               onNavigate={navigate}
               onOpenMarket={openMarket}
               onPickCategory={(c) => router.navigate({ view: "markets", categoryFilter: c })}
@@ -164,7 +164,7 @@ export default function App() {
           {view === "markets" && (
             <Markets
               markets={data.markets}
-              stakeEvents={data.stakeEvents}
+              tradeEvents={data.tradeEvents}
               categoryFilter={categoryFilter}
               // Filter-pill clicks rewrite the current entry rather than
               // pushing a new one — Back should undo "left this page", not
@@ -179,7 +179,7 @@ export default function App() {
               <Detail
                 market={selected}
                 markets={data.markets}
-                stakeEvents={data.stakeEvents}
+                tradeEvents={data.tradeEvents}
                 settledEvents={data.settledEvents}
                 lpEvents={data.lpEvents}
                 positions={data.positions}
@@ -207,7 +207,7 @@ export default function App() {
           {view === "leaderboard" && (
             <Leaderboard
               markets={data.markets}
-              stakeEvents={data.stakeEvents}
+              tradeEvents={data.tradeEvents}
               lpEvents={data.lpEvents}
               account={wallet.account}
             />

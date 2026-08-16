@@ -1,12 +1,12 @@
 import { category } from "../lib/categories";
-import { formatToken, formatPercent, formatMarketValue } from "../lib/format";
-import { impliedYesPercent, isOneSided, statusLabel, totalPool } from "../lib/parimutuel";
+import { formatMarketValue, formatPercent, formatToken, statusLabel } from "../lib/format";
+import { impliedYesPercent, isOneSided, totalPool } from "../lib/pricing";
 import {
   isPriceMarket,
   MarketStatus,
   priceAssetLabel,
   type Market,
-  type StakeEvent,
+  type TradeEvent,
 } from "../lib/types";
 import type { MarketEvent } from "../lib/events";
 import { StrikeLadder } from "./StrikeLadder";
@@ -21,7 +21,7 @@ export function MarketCard({
   onOpen,
 }: {
   market: Market;
-  events: StakeEvent[];
+  events: TradeEvent[];
   /** When set, this card stands for a whole strike ladder rather than one market. */
   ladder?: MarketEvent;
   onOpen: (key: string) => void;

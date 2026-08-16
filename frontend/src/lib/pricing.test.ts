@@ -5,7 +5,7 @@ import {
   impliedYesPercent,
   isOneSided,
   totalPool,
-} from "./parimutuel";
+} from "./pricing";
 import { MarketStatus, Outcome, type Market } from "./types";
 import { amm0, crypto0 } from "./identity.test";
 

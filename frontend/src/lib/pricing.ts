@@ -1,16 +1,23 @@
 import { MarketStatus, Outcome, type Market, type Side } from "./types";
 
 /**
- * Parimutuel maths, deliberately mirroring FlightMarket.sol.
+ * What a market is worth, across BOTH pricing models.
  *
- * IMPORTANT — this market is parimutuel, not an order book. There is no "share
- * price" you lock in at entry: your payout is your fraction of the winning pool
- * multiplied by the whole pot, computed at settlement. So a percentage here is
- * a *current implied probability*, never a price you bought at, and any payout
- * figure is an estimate that moves whenever anyone else stakes.
+ * This was `parimutuel.ts` and mirrored FlightMarket.sol alone. It now serves
+ * the AMM too, and the rename is not cosmetic: almost every function here has
+ * a branch where the two models disagree, and reading the file as
+ * parimutuel-only is how you talk yourself into applying the wrong one.
+ *
+ * The disagreement that matters most: **a parimutuel percentage and an AMM
+ * percentage are different things.** In a parimutuel pool your payout is your
+ * fraction of the winning side times the whole pot, fixed only at settlement,
+ * so a percentage is a current implied probability that moves whenever anyone
+ * else stakes — never a price you bought at. In the AMM it IS the price a
+ * small trade executes at, and it is read from the quoted price rather than
+ * from the reserves, which run the opposite way.
  *
  * All arithmetic uses bigint with truncating division so displayed figures
- * match what `claim()` actually transfers, down to the last unit.
+ * match what the contract actually transfers, down to the last unit.
  */
 
 /**
@@ -147,34 +154,4 @@ export function claimablePayout(
     return (noStake * total) / m.noPool;
   }
   return 0n;
-}
-
-export function outcomeLabel(o: Outcome): string {
-  switch (o) {
-    case Outcome.Yes:
-      return "Yes";
-    case Outcome.No:
-      return "No";
-    case Outcome.Void:
-      return "Void";
-    default:
-      return "—";
-  }
-}
-
-export function statusLabel(s: MarketStatus): string {
-  switch (s) {
-    case MarketStatus.Open:
-      return "Open";
-    case MarketStatus.Locked:
-      return "Locked";
-    case MarketStatus.SettlementRequested:
-      return "Settling";
-    case MarketStatus.Settled:
-      return "Settled";
-    case MarketStatus.Void:
-      return "Void";
-    default:
-      return "Unknown";
-  }
 }

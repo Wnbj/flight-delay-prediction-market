@@ -1,5 +1,6 @@
 import { formatUnits, parseUnits } from "viem";
 import { TOKEN_DECIMALS, TOKEN_SYMBOL } from "./config";
+import { MarketStatus, Outcome } from "./types";
 
 /** Token amount → "12.5 mUSDC". Trims trailing zeros; keeps small values readable. */
 export function formatToken(v: bigint, opts: { symbol?: boolean } = {}): string {
@@ -121,4 +122,40 @@ export function formatUsdNumber(value: number): string {
     minimumFractionDigits: 2,
     maximumFractionDigits: 2,
   })}`;
+}
+
+/*
+ * Enum → the word shown on screen. These live here rather than with the
+ * pricing maths because that is all they are: neither depends on which pricing
+ * model a market uses, and both are pure display.
+ */
+
+export function outcomeLabel(o: Outcome): string {
+  switch (o) {
+    case Outcome.Yes:
+      return "Yes";
+    case Outcome.No:
+      return "No";
+    case Outcome.Void:
+      return "Void";
+    default:
+      return "—";
+  }
+}
+
+export function statusLabel(s: MarketStatus): string {
+  switch (s) {
+    case MarketStatus.Open:
+      return "Open";
+    case MarketStatus.Locked:
+      return "Locked";
+    case MarketStatus.SettlementRequested:
+      return "Settling";
+    case MarketStatus.Settled:
+      return "Settled";
+    case MarketStatus.Void:
+      return "Void";
+    default:
+      return "Unknown";
+  }
 }

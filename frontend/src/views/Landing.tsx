@@ -1,22 +1,22 @@
 import { useEffect, useMemo, useRef } from "react";
 import { CATEGORIES } from "../lib/categories";
 import { formatToken } from "../lib/format";
-import { impliedYesPercent, totalPool } from "../lib/parimutuel";
+import { impliedYesPercent, totalPool } from "../lib/pricing";
 import { groupIntoEvents, isLadder } from "../lib/events";
-import { MarketStatus, type CategoryId, type Market, type StakeEvent } from "../lib/types";
+import { MarketStatus, type CategoryId, type Market, type TradeEvent } from "../lib/types";
 import { MarketCard } from "../components/MarketCard";
 import { Reveal } from "../components/Reveal";
 import type { View } from "../lib/view";
 
 export function Landing({
   markets,
-  stakeEvents,
+  tradeEvents,
   onNavigate,
   onOpenMarket,
   onPickCategory,
 }: {
   markets: Market[];
-  stakeEvents: StakeEvent[];
+  tradeEvents: TradeEvent[];
   onNavigate: (v: View) => void;
   onOpenMarket: (key: string) => void;
   onPickCategory: (id: CategoryId) => void;
@@ -32,7 +32,7 @@ export function Landing({
   const stats = useMemo(() => {
     const volume = markets.reduce((a, m) => a + totalPool(m), 0n);
     const open = markets.filter((m) => m.status === MarketStatus.Open).length;
-    const predictors = new Set(stakeEvents.map((e) => e.user.toLowerCase())).size;
+    const predictors = new Set(tradeEvents.map((e) => e.user.toLowerCase())).size;
     const resolved = markets.filter(
       (m) => m.status === MarketStatus.Settled || m.status === MarketStatus.Void,
     ).length;
@@ -42,7 +42,7 @@ export function Landing({
       { label: "Predictors", value: String(predictors) },
       { label: "Markets resolved", value: String(resolved) },
     ];
-  }, [markets, stakeEvents]);
+  }, [markets, tradeEvents]);
 
   // The hero ring shows the real mean implied probability across live markets.
   const avgOdds = useMemo(() => {
@@ -348,7 +348,7 @@ export function Landing({
                 <MarketCard
                   market={event.featured}
                   ladder={isLadder(event) ? event : undefined}
-                  events={stakeEvents}
+                  events={tradeEvents}
                   onOpen={onOpenMarket}
                 />
               </Reveal>

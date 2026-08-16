@@ -166,6 +166,11 @@ export function priceAssetLabel(m: PriceMarket): string {
 /**
  * One trade on a market, whichever pricing model it uses.
  *
+ * Was `StakeEvent`, from when staking was the only way in. It has carried AMM
+ * buys and sells for some time, and a name that says "stake" invites code to
+ * assume the parimutuel shape — which is the specific mistake that made every
+ * AMM trade invisible to the leaderboard, the activity feed and the sparkline.
+ *
  * `amount` is always COLLATERAL — what left or reached the trader's wallet —
  * so anything counting money can treat every market alike. What differs is
  * what the collateral bought: a parimutuel stake buys a claim on a pot, while
@@ -174,7 +179,7 @@ export function priceAssetLabel(m: PriceMarket): string {
  * into the shared fields, because a sell is a NEGATIVE position change and
  * silently folding it into `amount` would make every total wrong.
  */
-export interface StakeEvent {
+export interface TradeEvent {
   /** Composite market key — see MarketBase.key. */
   marketKey: string;
   user: `0x${string}`;
@@ -202,7 +207,7 @@ export interface StakeEvent {
 /**
  * One liquidity movement: a deposit, or a post-settlement withdrawal.
  *
- * Kept apart from `StakeEvent` because providing liquidity is not a trade —
+ * Kept apart from `TradeEvent` because providing liquidity is not a trade —
  * it takes no side and it moves the pool's depth rather than its price. What
  * makes it worth recording as an event at all is `totalLpShares`: with the
  * running total at each deposit, an ordered replay can say what fraction of

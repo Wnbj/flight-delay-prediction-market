@@ -2,22 +2,22 @@ import { useMemo } from "react";
 import { addressUrl } from "../lib/config";
 import { formatSigned, formatToken, initials, shortAddress } from "../lib/format";
 import { deriveTraders } from "../hooks/useChainData";
-import type { LpEvent, Market, StakeEvent } from "../lib/types";
+import type { LpEvent, Market, TradeEvent } from "../lib/types";
 
 export function Leaderboard({
   markets,
-  stakeEvents,
+  tradeEvents,
   lpEvents,
   account,
 }: {
   markets: Market[];
-  stakeEvents: StakeEvent[];
+  tradeEvents: TradeEvent[];
   lpEvents: LpEvent[];
   account: string | null;
 }) {
   const traders = useMemo(
-    () => deriveTraders(markets, stakeEvents, lpEvents),
-    [markets, stakeEvents, lpEvents],
+    () => deriveTraders(markets, tradeEvents, lpEvents),
+    [markets, tradeEvents, lpEvents],
   );
 
   const isYou = (a: string) => account !== null && a.toLowerCase() === account.toLowerCase();

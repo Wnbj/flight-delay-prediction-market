@@ -1,4 +1,4 @@
-import { impliedYesPercent } from "./parimutuel";
+import { impliedYesPercent } from "./pricing";
 import { isPriceMarket, type Market } from "./types";
 
 /**

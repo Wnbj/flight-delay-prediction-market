@@ -1,21 +1,13 @@
 import { useMemo, useState } from "react";
 import { category } from "../lib/categories";
 import { addressUrl, txUrl } from "../lib/config";
-import {
-  formatDepartureDate,
-  formatPercent,
-  formatTimestamp,
-  formatToken,
-  formatMarketValue,
-  shortAddress,
-} from "../lib/format";
+import { formatDepartureDate, formatMarketValue, formatPercent, formatTimestamp, formatToken, outcomeLabel, shortAddress, statusLabel } from "../lib/format";
 import {
   impliedYesPercent,
   isOneSided,
-  outcomeLabel,
-  statusLabel,
+
   totalPool,
-} from "../lib/parimutuel";
+} from "../lib/pricing";
 import {
   isPriceMarket,
   MarketStatus,
@@ -25,7 +17,7 @@ import {
   type Position,
   type LpEvent,
   type SettledEvent,
-  type StakeEvent,
+  type TradeEvent,
 } from "../lib/types";
 import { ladderFor } from "../lib/events";
 import { StrikeLadder } from "../components/StrikeLadder";
@@ -43,7 +35,7 @@ type Tab = "overview" | "activity" | "rules";
 export function Detail({
   market,
   markets,
-  stakeEvents,
+  tradeEvents,
   settledEvents,
   lpEvents,
   positions,
@@ -57,7 +49,7 @@ export function Detail({
 }: {
   market: Market;
   markets: Market[];
-  stakeEvents: StakeEvent[];
+  tradeEvents: TradeEvent[];
   settledEvents: SettledEvent[];
   lpEvents: LpEvent[];
   positions: Position[];
@@ -75,10 +67,10 @@ export function Detail({
 
   const marketStakes = useMemo(
     () =>
-      stakeEvents
+      tradeEvents
         .filter((e) => e.marketKey === market.key)
         .sort((a, b) => Number(b.blockNumber - a.blockNumber)),
-    [stakeEvents, market.key],
+    [tradeEvents, market.key],
   );
 
   /**
@@ -188,7 +180,7 @@ export function Detail({
                   title="Implied chance of Yes over time"
                   style={{ width: 76, height: 32, flexShrink: 0 }}
                 >
-                  <Sparkline market={market} events={stakeEvents} height={32} strokeWidth={1.5} />
+                  <Sparkline market={market} events={tradeEvents} height={32} strokeWidth={1.5} />
                 </div>
               </>
             )}
@@ -521,7 +513,7 @@ export function Detail({
           </h3>
           <div className="grid-3">
             {related.map((m) => (
-              <MarketCard key={m.key} market={m} events={stakeEvents} onOpen={onOpenMarket} />
+              <MarketCard key={m.key} market={m} events={tradeEvents} onOpen={onOpenMarket} />
             ))}
           </div>
         </div>

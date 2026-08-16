@@ -3,7 +3,7 @@ import {
   type LpEvent,
   type LpPosition,
   type Market,
-  type StakeEvent,
+  type TradeEvent,
 } from "./types";
 
 /**
@@ -60,9 +60,9 @@ export function markPoolValue(m: Market, shares: bigint, totalShares: bigint): b
  */
 export function attributeFees(
   lpEvents: LpEvent[],
-  trades: StakeEvent[],
+  trades: TradeEvent[],
 ): Map<string, Map<string, bigint>> {
-  const merged = [...lpEvents.map((e) => ({ block: e.blockNumber, lp: e, trade: null as StakeEvent | null })),
+  const merged = [...lpEvents.map((e) => ({ block: e.blockNumber, lp: e, trade: null as TradeEvent | null })),
     ...trades
       .filter((t) => t.amm)
       .map((t) => ({ block: t.blockNumber, lp: null as LpEvent | null, trade: t }))]

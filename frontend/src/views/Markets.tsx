@@ -1,7 +1,7 @@
 import { useMemo, useState } from "react";
 import { CATEGORIES } from "../lib/categories";
-import { totalPool } from "../lib/parimutuel";
-import type { CategoryId, Market, StakeEvent } from "../lib/types";
+import { totalPool } from "../lib/pricing";
+import type { CategoryId, Market, TradeEvent } from "../lib/types";
 import { MarketCard } from "../components/MarketCard";
 import { groupIntoEvents, isLadder } from "../lib/events";
 
@@ -15,13 +15,13 @@ const SORTS: { key: SortMode; label: string }[] = [
 
 export function Markets({
   markets,
-  stakeEvents,
+  tradeEvents,
   categoryFilter,
   onCategoryFilter,
   onOpenMarket,
 }: {
   markets: Market[];
-  stakeEvents: StakeEvent[];
+  tradeEvents: TradeEvent[];
   categoryFilter: CategoryId | "all";
   onCategoryFilter: (c: CategoryId | "all") => void;
   onOpenMarket: (key: string) => void;
@@ -120,7 +120,7 @@ export function Markets({
               key={event.key}
               market={event.featured}
               ladder={isLadder(event) ? event : undefined}
-              events={stakeEvents}
+              events={tradeEvents}
               onOpen={onOpenMarket}
             />
           ))}
