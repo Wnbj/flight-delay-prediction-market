@@ -17,29 +17,31 @@ Last updated **2026-08-16 16:03 UTC**. Working tree clean, `main` level with
 
 ## In flight
 
-### The AMM strike ladder is open and unsettled
+### The AMM strike ladder is settled — the old contract is still full
 
-Five rungs on `AmmMarket` `0x21A26cC7f7A5035330257aA61e44549BE30f4801`, all
-sharing one expiry.
+All five rungs on `AmmMarket` `0x21A26cC7f7A5035330257aA61e44549BE30f4801`
+settled 2026-08-16 ~17:40 UTC at BTC **$63,095.30**:
 
-| rung | strike | price now | seeded at |
-|---|---|---|---|
-| 0 | $62,500 | 85.0% | 85% |
-| 1 | $62,750 | **78.5%** | 70% |
-| 2 | $63,000 | 45.0% | 45% |
-| 3 | $63,250 | 25.0% | 25% |
-| 4 | $63,500 | 12.0% | 12% |
+| rung | strike | outcome |
+|---|---|---|
+| 0 | $62,500 | Yes |
+| 1 | $62,750 | Yes |
+| 2 | $63,000 | Yes |
+| 3 | $63,250 | No |
+| 4 | $63,500 | No |
 
-Rung 1 has drifted off its seed — there is **one `Bought` event** on this
-contract, so somebody has traded it. Everything else still sits exactly where
-it was seeded.
+Monotone, boundary between rungs 2 and 3, no inconsistency. Verified through
+`pool()` rather than the CLI log.
 
-- **Trading closes** ~17:05 UTC, **settleable from** ~17:36 UTC.
-- Settling is manual (see below). For each rung: `requestSettlement(i)` from the
-  deployer key, then `cre workflow simulate ... --trigger-index 1 --evm-tx-hash <tx>`.
-  Trigger index 1 is the crypto handler — `AmmMarket` shares it deliberately.
-- Nothing is waiting on this. It is a repeat of a path already proven end to
-  end on the previous ladder (five rungs, one price, all five consistent).
+**Beware the status numbering.** `AmmMarket.Status` has no `Locked`, so
+`2 = Settled` and `3 = Void` — one lower than the parimutuel contracts, whose
+numbers are what the RUNBOOK's settlement check quotes. Reading 2 as
+"SettlementRequested" makes a settled market look stuck.
+
+**Nothing has been withdrawn.** The maker's liquidity and residual shares are
+still sitting in the old contract; draining it is step 2 of the multi-LP
+migration above. On the OLD address the call is `withdrawMakerLiquidity(i)` —
+the new contract renames it `withdrawLiquidity`.
 
 ### Multi-LP is written and green, waiting on a deploy
 
