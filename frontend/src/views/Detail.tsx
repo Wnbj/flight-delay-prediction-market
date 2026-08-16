@@ -26,6 +26,8 @@ import {
   type SettledEvent,
   type StakeEvent,
 } from "../lib/types";
+import { ladderFor } from "../lib/events";
+import { StrikeLadder } from "../components/StrikeLadder";
 import { Sparkline } from "../components/Sparkline";
 import { Countdown } from "../components/Countdown";
 import { LivePrice } from "../components/LivePrice";
@@ -80,10 +82,17 @@ export function Detail({
     [marketStakes],
   );
 
+  const ladder = useMemo(() => ladderFor(market, markets), [market, markets]);
+
   const settlement = settledEvents.find((e) => e.marketKey === market.key);
   const position = positions.find((p) => p.market.key === market.key);
+  // Sibling rungs are already shown as the ladder, so exclude them here —
+  // otherwise the same markets appear twice on one page.
+  const ladderKeys = new Set(ladder?.rungs.map((m) => m.key) ?? []);
   const related = markets
-    .filter((m) => m.categoryId === market.categoryId && m.key !== market.key)
+    .filter(
+      (m) => m.categoryId === market.categoryId && m.key !== market.key && !ladderKeys.has(m.key),
+    )
     .slice(0, 3);
 
   return (
@@ -186,6 +195,27 @@ export function Detail({
           )}
 
           {isPriceMarket(market) && <PriceChart market={market} />}
+
+          {ladder && (
+            <div className="card" style={{ marginTop: "var(--space-4)" }}>
+              <div
+                className="muted"
+                style={{
+                  fontSize: 11,
+                  textTransform: "uppercase",
+                  letterSpacing: "0.06em",
+                  marginBottom: "var(--space-2)",
+                }}
+              >
+                All strikes at this expiry
+              </div>
+              <StrikeLadder event={ladder} selectedKey={market.key} onOpen={onOpenMarket} />
+              <p className="muted-strong" style={{ fontSize: 11, margin: "var(--space-2) 0 0" }}>
+                Same question, same moment, different strike. Each rung is its own market — pick
+                the one you actually have a view on.
+              </p>
+            </div>
+          )}
 
           {settlement && (
             <div

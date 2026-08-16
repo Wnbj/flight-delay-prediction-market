@@ -8,6 +8,8 @@ import {
   type Market,
   type StakeEvent,
 } from "../lib/types";
+import type { MarketEvent } from "../lib/events";
+import { StrikeLadder } from "./StrikeLadder";
 import { Countdown } from "./Countdown";
 import { LivePrice } from "./LivePrice";
 import { Sparkline } from "./Sparkline";
@@ -15,15 +17,28 @@ import { Sparkline } from "./Sparkline";
 export function MarketCard({
   market,
   events,
+  ladder,
   onOpen,
 }: {
   market: Market;
   events: StakeEvent[];
+  /** When set, this card stands for a whole strike ladder rather than one market. */
+  ladder?: MarketEvent;
   onOpen: (key: string) => void;
 }) {
   const cat = category(market.categoryId);
   const yes = impliedYesPercent(market);
   const no = yes === null ? null : 100 - yes;
+
+  /**
+   * A ladder card stands for five markets, so quoting one rung's strike in the
+   * headline states a question narrower than the card actually offers. There
+   * is no event title on chain — every question embeds its own strike — so the
+   * shared question is recovered by removing the price from it.
+   */
+  const title = ladder
+    ? market.question.replace(/\$[\d,]+(\.\d+)?/, "…")
+    : market.question;
 
   return (
     <div
@@ -71,25 +86,33 @@ export function MarketCard({
       </div>
 
       <div className="heading" style={{ fontSize: 17, lineHeight: 1.25 }}>
-        {market.question}
+        {title}
       </div>
 
       {/* Crypto questions read alike at a glance, so surface the term that
           actually distinguishes them. */}
       {isPriceMarket(market) && (
         <div className="muted" style={{ fontSize: 12 }}>
-          {priceAssetLabel(market)} · strike {formatMarketValue(market.categoryId, market.strikePrice)}
+          {priceAssetLabel(market)}
+          {ladder
+            ? ` · ${ladder.rungs.length} strikes`
+            : ` · strike ${formatMarketValue(market.categoryId, market.strikePrice)}`}
         </div>
       )}
 
       <LivePrice market={market} size={12} />
 
-      <Sparkline market={market} events={events} />
-
-      <div style={{ display: "flex", height: 22, borderRadius: 5, overflow: "hidden" }}>
-        <div style={{ width: `${yes ?? 50}%`, background: "var(--color-accent)" }} />
-        <div style={{ width: `${no ?? 50}%`, background: "var(--color-neutral-700)" }} />
-      </div>
+      {ladder ? (
+        <StrikeLadder event={ladder} onOpen={onOpen} compact />
+      ) : (
+        <>
+          <Sparkline market={market} events={events} />
+          <div style={{ display: "flex", height: 22, borderRadius: 5, overflow: "hidden" }}>
+            <div style={{ width: `${yes ?? 50}%`, background: "var(--color-accent)" }} />
+            <div style={{ width: `${no ?? 50}%`, background: "var(--color-neutral-700)" }} />
+          </div>
+        </>
+      )}
 
       <div
         className="muted-strong"
@@ -102,9 +125,11 @@ export function MarketCard({
         }}
       >
         <span style={{ whiteSpace: "nowrap" }}>
-          {yes === null
-            ? "No stakes yet"
-            : `Yes ${formatPercent(yes)} · No ${formatPercent(no)}`}
+          {ladder
+            ? `${ladder.rungs.length} strikes`
+            : yes === null
+              ? "No stakes yet"
+              : `Yes ${formatPercent(yes)} · No ${formatPercent(no)}`}
         </span>
         <span style={{ whiteSpace: "nowrap" }}>{formatToken(totalPool(market))} pool</span>
       </div>

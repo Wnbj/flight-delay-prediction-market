@@ -3,6 +3,7 @@ import { CATEGORIES } from "../lib/categories";
 import { totalPool } from "../lib/parimutuel";
 import type { CategoryId, Market, StakeEvent } from "../lib/types";
 import { MarketCard } from "../components/MarketCard";
+import { groupIntoEvents, isLadder } from "../lib/events";
 
 type SortMode = "backed" | "newest" | "closing";
 
@@ -110,8 +111,18 @@ export function Markets({
         </div>
       ) : (
         <div className="grid-3" style={{ maxWidth: 1300 }}>
-          {filtered.map((m) => (
-            <MarketCard key={m.key} market={m} events={stakeEvents} onOpen={onOpenMarket} />
+          {/* Ladders collapse to one card. Five near-identical cards for what a
+              reader sees as one question is the noise a ladder removes, and it
+              also throws away the shape — the rungs only mean anything next to
+              each other. */}
+          {groupIntoEvents(filtered).map((event) => (
+            <MarketCard
+              key={event.key}
+              market={event.featured}
+              ladder={isLadder(event) ? event : undefined}
+              events={stakeEvents}
+              onOpen={onOpenMarket}
+            />
           ))}
         </div>
       )}

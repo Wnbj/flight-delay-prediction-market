@@ -798,12 +798,74 @@ forge script script/DeployAmm.s.sol:DeployAmm --rpc-url $SEPOLIA_RPC_URL --broad
 Live on Sepolia: opened at `5000` bps, a 3 mUSDC buy returned exactly the
 quoted 5,307,692 shares — 56.5 cents each — and moved the price to `6282`.
 
+## Strike ladders
+
+One question at one expiry, across several strikes — the shape Kalshi shows as
+an "event" with rungs beneath it. Live example: BTC at 17:30, five strikes
+$250 apart.
+
+**No contract change was needed, and none should be.** A ladder is N markets
+sharing an asset and an expiry and differing only in strike, so membership is
+DERIVED in `lib/events.ts` rather than stored:
+
+```
+`${categoryId}:${contract}:${asset}:${expiryTime}`
+```
+
+That makes it work retroactively on ladders created before the code existed,
+and it is also the honest definition — markets over the same thing resolving at
+the same instant *are* the same question.
+
+```bash
+AMM_MARKET=0x63Dd... TOKEN=0xcd12... STRIKE_LOW=62500 STRIKE_STEP=250 RUNGS=5 \
+forge script script/CreateLadder.s.sol:CreateLadder --rpc-url $SEPOLIA_RPC_URL --broadcast
+```
+
+### On the AMM, not a parimutuel contract
+
+A ladder is only worth anything if every rung has a price: 45% alone says
+little, but 85 / 70 / 45 / 25 / 12 across rising strikes is the market's whole
+view of where the price will land. An AMM quotes a price from the moment it
+opens; parimutuel rungs read "no odds yet" until somebody stakes, so a ladder of
+five of them is a column of blanks.
+
+### A fresh ladder is flat, and that is not a bug
+
+Seeding an AMM market mints equal reserves — the maker takes no view — so every
+rung opens at exactly 50%, whatever its strike. Five rungs all reading 50% say
+nothing, so the live ladder was shaped by actually trading each rung to a target
+probability. The prices are real trades against the curve, not a number written
+into a field:
+
+| strike | yes | no |
+|---|---|---|
+| $62,500 | 85% | 15% |
+| $62,750 | 70% | 30% |
+| $63,000 | 45% | 55% |
+| $63,250 | 25% | 75% |
+| $63,500 | 12% | 88% |
+
+Reaching a target price `p` from an even start with liquidity `L` costs
+`L·(sqrt(p/(1-p)) − 1)` — which is why the far rungs cost multiples of the near
+ones, and why a real venue seeds asymmetric reserves instead.
+
+### Which rung the card shows
+
+The one closest to even odds, not the middle strike. The near-certain rungs at
+either end carry almost no information, and which strike sits in the middle is
+an accident of how the ladder was laid out — while which one is closest to 50%
+is what the market currently believes.
+
+Ladder cards also recover a shared title by stripping the price out of the
+featured rung's question, because every question embeds its own strike and
+there is no event title on chain.
+
 ## Tests
 
 | suite | count | command |
 |---|---|---|
 | contracts | 134 | `cd contracts && forge test` |
-| frontend | 60 | `cd frontend && bun run test` |
+| frontend | 86 | `cd frontend && bun run test` |
 | workflow | 35 | `cd flight-market/flight-settlement && bun test` |
 
 The frontend and workflow suites were added after a routing bug reached a
