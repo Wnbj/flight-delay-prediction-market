@@ -135,23 +135,31 @@ export function Live({
       {feed.unattributed.length > 0 && (
         <section>
           <div className="eyebrow" style={{ marginBottom: "var(--space-3)" }}>
-            Reports with no market named
+            Refused reports with no market named
           </div>
           <div className="card" style={{ maxWidth: 820 }}>
             <div className="muted" style={{ fontSize: 13, marginBottom: "var(--space-2)" }}>
-              A report names the contract it was delivered to, not the market. When several
-              markets on one contract were in flight at the same time, the chain does not say
-              which of them this was — so it is left unattached rather than guessed at.
+              A report names the contract it was delivered to, never the market. Where nothing on
+              that contract was still awaiting settlement, the refusal was a re-delivery of
+              something already decided — the reconciliation sweeps produce those on purpose and
+              the contracts reject them by design. Where two or more were waiting, one of them
+              failed and the chain does not say which.
             </div>
-            {feed.unattributed.map((r) => (
-              <div key={`${r.txHash}:${r.logIndex}`} className="muted-strong" style={{ fontSize: 11 }}>
+            {feed.unattributed.map(({ report: r, reason, openAtBlock }) => (
+              <div
+                key={`${r.txHash}:${r.logIndex}`}
+                className="muted-strong"
+                style={{ fontSize: 11 }}
+              >
                 block{" "}
                 <a href={blockUrl(r.blockNumber)} target="_blank" rel="noreferrer">
                   {r.blockNumber.toString()}
                 </a>{" "}
                 · {r.category ?? shortAddress(r.receiver)} ·{" "}
-                <span style={{ color: r.accepted ? undefined : "var(--color-negative)" }}>
-                  {r.accepted ? "accepted" : "refused"}
+                <span style={{ color: reason === "ambiguous" ? "var(--color-negative)" : undefined }}>
+                  {reason === "duplicate"
+                    ? "duplicate, nothing was awaiting settlement"
+                    : `unexplained — ${openAtBlock} markets were awaiting settlement`}
                 </span>{" "}
                 ·{" "}
                 <a href={txUrl(r.txHash)} target="_blank" rel="noreferrer">
@@ -172,7 +180,6 @@ const POLL_LABEL = "few seconds";
 const STATE_COPY: Record<PipelineState, string> = {
   "in-flight": "Waiting for a report",
   rejected: "Report refused",
-  duplicate: "Duplicate report refused",
   settled: "Settled",
   "settled-unattested": "Settled",
   paid: "Settled and paid",
@@ -402,10 +409,10 @@ function BlockLine({ block, tx }: { block: bigint; tx: string }) {
 
 function HistoryRow({ attempt }: { attempt: Attempt }) {
   const cat = attempt.market ? category(attempt.market.categoryId) : null;
-  const duplicate = attempt.state === "duplicate";
+  const refused = attempt.state === "rejected";
 
   return (
-    <tr style={duplicate ? { boxShadow: "inset 2px 0 0 var(--color-negative)" } : undefined}>
+    <tr style={refused ? { boxShadow: "inset 2px 0 0 var(--color-negative)" } : undefined}>
       <td>
         {cat && (
           <span className="tag" style={{ ...cat.tagStyle, marginRight: 8 }}>

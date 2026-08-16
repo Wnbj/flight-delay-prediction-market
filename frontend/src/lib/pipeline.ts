@@ -17,14 +17,32 @@ export type PipelineState =
   | "in-flight"
   /** The forwarder recorded a refused delivery and the market never settled. */
   | "rejected"
-  /** A refused delivery for a market that was ALREADY settled — a duplicate. */
-  | "duplicate"
   /** Delivered, accepted, written. A void outcome is still a settlement. */
   | "settled"
   /** Settled, but no forwarder log in range — absence of evidence, not failure. */
   | "settled-unattested"
   /** Settled and at least some money has left. */
   | "paid";
+
+/**
+ * A refused report that names no market, and why it could not be placed.
+ *
+ * `duplicate` — nothing on that contract was awaiting settlement when the
+ * report arrived, so it was a re-delivery of something already decided. The
+ * cron sweeps produce these on purpose: they re-settle inside the finality
+ * window and the contract rejects the second attempt. Ordinary, not an alarm.
+ *
+ * `ambiguous` — two or more markets on that contract WERE awaiting settlement,
+ * and a refused report carries no market id. One of them failed and the chain
+ * does not say which. That is worth someone's attention, and saying which one
+ * would be inventing a fact.
+ */
+export interface UnattributedReport {
+  report: ReportLog;
+  reason: "duplicate" | "ambiguous";
+  /** Attempts open on that contract at that block. 0 for a duplicate. */
+  openAtBlock: number;
+}
 
 export interface Attempt {
   /** `${marketKey}#${n}` — a market can be attempted more than once. */
@@ -50,12 +68,12 @@ export interface Pipelines {
    * Refused reports that could not be tied to one market.
    *
    * A refused report names a receiver contract and nothing else — no market id
-   * — so when several markets on that contract were in flight at the time, the
-   * chain genuinely does not say which one it was. Guessing the most recent
-   * would present an inference as a fact, and with a five-rung ladder settled
-   * in sequence the ambiguous case is ordinary rather than exotic.
+   * — so unless exactly one market on that contract was awaiting settlement,
+   * the chain genuinely does not say which one it was. Guessing would present
+   * an inference as a fact, and with a five-rung ladder settled in sequence the
+   * ambiguous case is ordinary rather than exotic.
    */
-  unattributed: ReportLog[];
+  unattributed: UnattributedReport[];
 }
 
 const isRequested = (l: SettlementLog): l is RequestedLog => l.kind === "requested";
@@ -146,7 +164,7 @@ export function buildPipelines(
 
   // --- reports, last, because attribution depends on the rest --------------
 
-  const unattributed: ReportLog[] = [];
+  const unattributed: UnattributedReport[] = [];
   const settledByTx = new Map<`0x${string}`, SettledLog[]>();
   for (const l of ordered) {
     if (!isSettled(l)) continue;
@@ -170,38 +188,50 @@ export function buildPipelines(
       continue;
     }
 
-    if (report.accepted) {
-      // Accepted but nothing settled in the transaction. Not something this
-      // system produces; surfaced rather than silently dropped.
-      unattributed.push(report);
-      continue;
-    }
+    /**
+     * Accepted, but its `Settled` is not in hand yet.
+     *
+     * Not listed, because it is not a loose end: an accepted report means
+     * `_processReport` ran, and that always emits `Settled` in the same
+     * transaction. So the settlement exists and simply has not been read —
+     * this endpoint answers identical queries with different numbers of logs
+     * (see `mergeLogs`), and the union will pair them on a later poll.
+     *
+     * Listing it would put a permanent "unexplained" entry on screen for
+     * something that resolves itself within seconds.
+     */
+    if (report.accepted) continue;
 
     /**
-     * Refused. The only handle is (receiver contract, block). Attach it when
-     * exactly one attempt on that contract was open; otherwise say so.
+     * Refused. The only handle is (receiver contract, block), so the question
+     * is how many markets on that contract were AWAITING settlement when it
+     * landed — a market already settled by then cannot be the one that failed.
+     *
+     * Nothing is attached on a guess. An earlier version fell back to "the most
+     * recent candidate", which quietly pinned sweep duplicates onto markets
+     * that had settled and been paid out days before, and then hid them because
+     * a paid attempt outranks a refusal when the state is computed.
      */
     if (report.category === null) {
-      unattributed.push(report);
+      unattributed.push({ report, reason: "ambiguous", openAtBlock: 0 });
       continue;
     }
-    const candidates = attemptsInOrder.filter(
+    const open = attemptsInOrder.filter(
       (a) =>
         a.marketKey.startsWith(`${report.category}:`) &&
         a.startedAt <= report.blockNumber &&
-        !a.report,
+        !a.report &&
+        (a.settled === null || a.settled.blockNumber > report.blockNumber),
     );
-    const open = candidates.filter((a) => !a.settled);
 
     if (open.length === 1) {
       open[0]!.report = report;
-    } else if (open.length === 0 && candidates.length > 0) {
-      // Every candidate is already settled — a refused duplicate, which the
-      // cron sweeps produce legitimately by re-settling inside the finality
-      // window. Attach to the most recent so it reads as what it is.
-      candidates[candidates.length - 1]!.report = report;
     } else {
-      unattributed.push(report);
+      unattributed.push({
+        report,
+        reason: open.length === 0 ? "duplicate" : "ambiguous",
+        openAtBlock: open.length,
+      });
     }
   }
 
@@ -247,16 +277,16 @@ export function buildPipelines(
 }
 
 function stateOf(a: Attempt): PipelineState {
+  // A refusal outranks everything. Attribution above only ever attaches a
+  // refused report to an attempt that was genuinely open at the time, so if one
+  // is here the market did not settle from it — and burying that under a later
+  // status is the exact failure this module exists to prevent.
+  if (a.report && !a.report.accepted) return "rejected";
   if (a.settled) {
     if (a.payouts.length > 0) return "paid";
-    // A report that arrived after the market was already settled is a refused
-    // duplicate, not a failure — the contract rejecting a re-settlement is the
-    // sweep working as designed.
-    if (a.report && !a.report.accepted) return "duplicate";
     if (!a.report) return "settled-unattested";
     return "settled";
   }
-  if (a.report && !a.report.accepted) return "rejected";
   return "in-flight";
 }
 

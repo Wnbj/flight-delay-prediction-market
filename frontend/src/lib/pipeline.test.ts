@@ -141,19 +141,45 @@ describe("buildPipelines", () => {
   });
 
   /**
-   * A refused report AFTER the market settled is a duplicate, which the cron
-   * sweeps produce legitimately by re-settling inside the finality window. It
-   * must not read as an alarm.
+   * A refused report AFTER the market settled is a re-delivery of something
+   * already decided — the cron sweeps produce these on purpose by re-settling
+   * inside the finality window. It is not pinned on the settled market, both
+   * because that market plainly did not fail and because the report names no
+   * market at all.
+   *
+   * An earlier version attached it to the most recent candidate, which put
+   * refusals onto markets that had settled and paid out days before — and then
+   * hid them, because a paid attempt outranked a refusal when the state was
+   * computed. Found by running the page against real history, not by reading.
    */
-  it("calls a refusal after settlement a duplicate", () => {
+  it("does not pin a post-settlement refusal on the market that settled", () => {
     const t = tx();
-    const { attempts } = build([
+    const { attempts, unattributed } = build([
       requested(crypto0.key, 100n),
       settled(crypto0.key, 114n, t),
       report(CRYPTO_MARKET_ADDRESS, "crypto", false, 200n),
     ]);
 
-    expect(attempts[0]!.state).toBe("duplicate");
+    expect(attempts[0]!.state).toBe("settled-unattested");
+    expect(unattributed).toHaveLength(1);
+    expect(unattributed[0]!.reason).toBe("duplicate");
+    expect(unattributed[0]!.openAtBlock).toBe(0);
+  });
+
+  /** A refusal must never be buried under a later, happier-looking status. */
+  it("keeps a refusal visible even when the market was later paid out", () => {
+    const t = tx();
+    const { attempts } = build([
+      requested(crypto0.key, 100n),
+      report(CRYPTO_MARKET_ADDRESS, "crypto", false, 110n),
+      // A second attempt settles and pays; the first must still read refused.
+      requested(crypto0.key, 200n),
+      settled(crypto0.key, 214n, t),
+      payout(crypto0.key, 230n, "claim"),
+    ]);
+
+    expect(attempts[0]!.state).toBe("rejected");
+    expect(attempts[1]!.state).toBe("paid");
   });
 
   /** A void is a successfully delivered refund decision, not a failure. */
@@ -210,6 +236,8 @@ describe("buildPipelines", () => {
     ]);
 
     expect(unattributed).toHaveLength(1);
+    expect(unattributed[0]!.reason).toBe("ambiguous");
+    expect(unattributed[0]!.openAtBlock).toBe(2);
     expect(attempts.every((a) => a.state === "in-flight")).toBe(true);
   });
 
