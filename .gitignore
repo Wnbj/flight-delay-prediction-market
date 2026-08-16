@@ -23,3 +23,9 @@ frontend/dist/
 # CRE workflow config — holds the AeroDataBox API key locally.
 # Copy config.staging.example.json to config.staging.json and fill it in.
 cre/settlement/config.staging.json
+
+# Local dev-server config for the editor's preview pane. Machine-specific —
+# it hardcodes an absolute path to a bun binary in one user's home directory,
+# so it is useless to anyone else and mildly leaky about who that user is.
+# Only this file: other .claude/ config could reasonably be shared.
+.claude/launch.json
