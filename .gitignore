@@ -29,3 +29,9 @@ cre/settlement/config.staging.json
 # so it is useless to anyone else and mildly leaky about who that user is.
 # Only this file: other .claude/ config could reasonably be shared.
 .claude/launch.json
+
+# Session notes, kept local. Working notes about a moment rather than
+# documentation of the system, and they go stale between sessions in a way a
+# commit history should not have to carry. What the system IS lives in
+# README.md; how to operate it lives in RUNBOOK.md.
+CLAUDE.md
