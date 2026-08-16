@@ -94,6 +94,11 @@ export type Config = {
    */
   stockContractAddress?: string
   /**
+   * ReserveMarket address. Empty string leaves the reserve handler
+   * unregistered.
+   */
+  reserveContractAddress?: string
+  /**
    * Cron schedule for the reconciliation sweep, in six-field cron form
    * (seconds first). Empty string leaves the sweep unregistered and the
    * workflow purely log-driven. See config.staging.example.json for a
@@ -164,6 +169,27 @@ const stockSettlementRequestedAbi = [
 
 const STOCK_SETTLEMENT_REQUESTED_TOPIC = toEventSelector(
   "SettlementRequested(uint256,address,uint64,uint64,uint64,uint32)",
+)
+
+// Must match ReserveMarket.sol exactly. Note the ABSENCE of closeTime: a
+// reserve has no trading session, so there is no movement check to perform and
+// the contract deliberately does not supply the input for one.
+const reserveSettlementRequestedAbi = [
+  {
+    type: "event",
+    name: "SettlementRequested",
+    inputs: [
+      { name: "marketId", type: "uint256", indexed: true },
+      { name: "feed", type: "address", indexed: false },
+      { name: "strikePrice", type: "uint64", indexed: false },
+      { name: "expiryTime", type: "uint64", indexed: false },
+      { name: "maxStaleness", type: "uint32", indexed: false },
+    ],
+  },
+] as const
+
+const RESERVE_SETTLEMENT_REQUESTED_TOPIC = toEventSelector(
+  "SettlementRequested(uint256,address,uint64,uint64,uint32)",
 )
 
 // --- market-state ABI, for the cron sweep -----------------------------------
@@ -1659,6 +1685,151 @@ export const onSweepStocks = (runtime: Runtime<Config>): string => {
   return "nothing stuck"
 }
 
+// --- reserve settlement, from a Chainlink PoR / NAV feed ---------------------
+//
+// Deliberately not a flag on the stock path. The equity rule — void unless the
+// answer changed between close and expiry — exists because a price feed keeps
+// publishing while its exchange is shut. A reserve has no session: deposits and
+// redemptions land at any hour, and reserves sitting still for a day is
+// ordinary rather than proof the outcome was already fixed. ReserveMarket does
+// not even emit closeTime, so this path cannot apply that check by accident.
+//
+// What guards it instead is staleness, which is why maxStaleness is the
+// load-bearing parameter here.
+
+export type ReserveTerms = {
+  marketId: bigint
+  feed: string
+  strikePrice: bigint
+  expiryTime: number
+  maxStaleness: number
+  atBlock: bigint
+  budget: ReadBudget
+}
+
+const settleReserveMarket = (runtime: Runtime<Config>, t: ReserveTerms): string => {
+  const { marketId, feed, maxStaleness, atBlock, budget } = t
+  const strike = t.strikePrice
+  const expiry = t.expiryTime
+
+  runtime.log(
+    `Settling reserve market ${marketId}: feed ${feed} vs strike ${strike} at ${expiry}, pinned to block ${atBlock}`,
+  )
+
+  const network = getNetwork({
+    chainFamily: "evm",
+    chainSelectorName: runtime.config.chainSelectorName,
+  })
+  if (!network) {
+    throw new Error(`Unknown chain selector name: ${runtime.config.chainSelectorName}`)
+  }
+  const evmClient = new EVMClient(network.chainSelector.selector)
+
+  let outcome: number
+  let observedLevel = 0n
+
+  try {
+    // Reserve feeds are the reason decimals are read rather than assumed:
+    // stETH Proof of Reserves publishes 18, and its raw answer does not fit
+    // in a uint64 at all.
+    const decimals = decodeFunctionResult({
+      abi: feedAbi,
+      functionName: "decimals",
+      data: ethCall(
+        runtime,
+        evmClient,
+        feed,
+        encodeFunctionData({ abi: feedAbi, functionName: "decimals" }),
+        atBlock,
+        budget,
+      ),
+    }) as number
+
+    const latest = readFeedRound(runtime, evmClient, feed, atBlock, budget)
+    const atExpiry = roundInForceAt(runtime, evmClient, feed, atBlock, budget, latest, expiry)
+
+    checkRoundUsable(atExpiry, expiry, Number(maxStaleness))
+
+    observedLevel = normalizeToEightDecimals(atExpiry.answer, Number(decimals))
+    outcome = observedLevel >= strike ? OUTCOME_YES : OUTCOME_NO
+  } catch (err) {
+    runtime.log(`Resolution failed, voiding reserve market ${marketId}: ${err}`)
+    outcome = OUTCOME_VOID
+    observedLevel = 0n
+  }
+
+  const settledAt = Math.floor(runtime.now().getTime() / 1000)
+  const evidence = JSON.stringify({
+    marketId: marketId.toString(),
+    feed,
+    strikePrice: strike.toString(),
+    expiryTime: expiry,
+    observedLevel: observedLevel.toString(),
+    outcome,
+    settledAt,
+  })
+  const evidenceHash = keccak256(toHex(evidence))
+
+  runtime.log(
+    `Reserve market ${marketId} -> outcome=${outcome} level=${observedLevel} strike=${strike} evidence=${evidenceHash}`,
+  )
+
+  const encoded = encodeAbiParameters(
+    parseAbiParameters(
+      "uint256 marketId, uint8 outcome, int256 observedValue, bytes32 evidenceHash",
+    ),
+    [marketId, outcome, observedLevel, evidenceHash],
+  )
+
+  const signedReport = runtime.report(prepareReportRequest(encoded)).result()
+
+  const txResult = evmClient
+    .writeReport(runtime, {
+      receiver: runtime.config.reserveContractAddress ?? "",
+      report: signedReport,
+      gasConfig: { gasLimit: runtime.config.gasLimit },
+    })
+    .result()
+
+  if (txResult.txStatus !== TxStatus.SUCCESS) {
+    throw new Error(`Write failed: ${txResult.errorMessage || txResult.txStatus}`)
+  }
+
+  const txHash = bytesToHex(txResult.txHash ?? new Uint8Array(32))
+  runtime.log(`Settled reserve market ${marketId} in tx ${txHash}`)
+  return txHash
+}
+
+export const onReserveSettlementRequested = (
+  runtime: Runtime<Config>,
+  triggerEvent: EVMLog,
+): string => {
+  const decoded = decodeEventLog({
+    abi: reserveSettlementRequestedAbi,
+    data: bytesToHex(triggerEvent.data),
+    topics: triggerEvent.topics.map((t) => bytesToHex(t)) as [
+      `0x${string}`,
+      ...`0x${string}`[],
+    ],
+  })
+
+  const { marketId, feed, strikePrice, expiryTime, maxStaleness } = decoded.args
+
+  if (!triggerEvent.blockNumber) {
+    throw new Error("Trigger log carries no block number to pin reads to")
+  }
+
+  return settleReserveMarket(runtime, {
+    marketId,
+    feed,
+    strikePrice: BigInt(strikePrice),
+    expiryTime: Number(expiryTime),
+    maxStaleness: Number(maxStaleness),
+    atBlock: protoBigIntToBigint(triggerEvent.blockNumber),
+    budget: newReadBudget(),
+  })
+}
+
 export const initWorkflow = (config: Config) => {
   const network = getNetwork({
     chainFamily: "evm",
@@ -1720,6 +1891,21 @@ export const initWorkflow = (config: Config) => {
           }),
         ),
         onStockSettlementRequested,
+      ),
+    )
+  }
+
+  if (config.reserveContractAddress && config.reserveContractAddress !== "") {
+    handlers.push(
+      handler(
+        evmClient.logTrigger(
+          logTriggerConfig({
+            addresses: [config.reserveContractAddress as `0x${string}`],
+            topics: [[RESERVE_SETTLEMENT_REQUESTED_TOPIC]],
+            confidence: "LATEST",
+          }),
+        ),
+        onReserveSettlementRequested,
       ),
     )
   }

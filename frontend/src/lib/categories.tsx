@@ -4,8 +4,8 @@ import type { CategoryId } from "./types";
 /**
  * Category registry — the extension point for new market types.
  *
- * `flights`, `crypto` and `stocks` are live, each backed by its own contract.
- * The rest
+ * `flights`, `crypto`, `stocks` and `reserves` are live, each backed by its
+ * own contract. The rest
  * are declared but disabled: they render in the UI as "coming soon" rather
  * than being hidden, so the shape of the product is visible without inventing
  * markets that do not exist.
@@ -91,6 +91,17 @@ const stocksIcon = (size: number) => (
   </svg>
 );
 
+const reservesIcon = (size: number) => (
+  <svg viewBox="0 0 64 64" width={size} height={size} aria-hidden="true">
+    <circle cx="32" cy="32" r="20" fill="none" stroke="var(--color-accent)" strokeWidth="1.6" />
+    <ellipse cx="32" cy="24" rx="11" ry="4" fill="none" stroke="var(--color-accent)" strokeWidth="1.6" />
+    <path d="M21 24v14c0 2.2 4.9 4 11 4s11-1.8 11-4V24" fill="none"
+      stroke="var(--color-accent)" strokeWidth="1.6" />
+    <path d="M21 31c0 2.2 4.9 4 11 4s11-1.8 11-4" fill="none"
+      stroke="var(--color-neutral-500)" strokeWidth="1.2" />
+  </svg>
+);
+
 const popIcon = (size: number) => (
   <svg viewBox="0 0 64 64" width={size} height={size} aria-hidden="true">
     <circle cx="32" cy="32" r="20" fill="none" stroke="var(--color-accent)" strokeWidth="1.6" />
@@ -142,6 +153,14 @@ export const CATEGORIES: CategoryDef[] = [
     live: true,
     blurb: "Index and commodity levels, settled from Chainlink Data Feeds.",
     icon: stocksIcon,
+  },
+  {
+    id: "reserves",
+    name: "Reserves",
+    tagStyle: TAG.accent2,
+    live: true,
+    blurb: "Proof-of-Reserve and fund NAV levels, settled from Chainlink feeds.",
+    icon: reservesIcon,
   },
   {
     id: "pop",

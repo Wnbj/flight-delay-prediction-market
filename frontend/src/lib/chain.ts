@@ -12,11 +12,18 @@ import {
   CRYPTO_MARKET_ADDRESS,
   DEPLOY_BLOCK,
   MARKET_ADDRESS,
+  RESERVE_MARKET_ADDRESS,
   RPC_URL,
   STOCK_MARKET_ADDRESS,
   TOKEN_ADDRESS,
 } from "./config";
-import { cryptoMarketAbi, flightMarketAbi, mockUsdcAbi, stockMarketAbi } from "./abi";
+import {
+  cryptoMarketAbi,
+  flightMarketAbi,
+  mockUsdcAbi,
+  reserveMarketAbi,
+  stockMarketAbi,
+} from "./abi";
 import {
   MarketStatus,
   Outcome,
@@ -44,6 +51,7 @@ export function walletClientFor(account: Address) {
 const marketContract = { address: MARKET_ADDRESS, abi: flightMarketAbi } as const;
 const cryptoContract = { address: CRYPTO_MARKET_ADDRESS, abi: cryptoMarketAbi } as const;
 const stockContract = { address: STOCK_MARKET_ADDRESS, abi: stockMarketAbi } as const;
+const reserveContract = { address: RESERVE_MARKET_ADDRESS, abi: reserveMarketAbi } as const;
 const tokenContract = { address: TOKEN_ADDRESS, abi: mockUsdcAbi } as const;
 
 /** Market ids restart at 0 per contract, so identity has to carry the category. */
@@ -56,6 +64,8 @@ export function contractFor(market: Market) {
       return cryptoContract;
     case "stocks":
       return stockContract;
+    case "reserves":
+      return reserveContract;
     default:
       return marketContract;
   }
@@ -152,10 +162,71 @@ async function readCryptoMarkets(): Promise<Market[]> {
   });
 }
 
-async function readStockMarkets(): Promise<Market[]> {
+/**
+ * The read surface StockMarket and ReserveMarket share, verified identical
+ * across both build artifacts. Their full ABIs differ — the reserve
+ * SettlementRequested event carries no closeTime — so a union of the two has
+ * no single type viem can read through. This is the shared subset.
+ */
+const feedMarketReadAbi = [
+  {
+    type: "function",
+    name: "marketCount",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256" }],
+    stateMutability: "view",
+  },
+  {
+    type: "function",
+    name: "core",
+    inputs: [{ name: "", type: "uint256" }],
+    outputs: [
+      { name: "question", type: "string" },
+      { name: "closeTime", type: "uint64" },
+      { name: "settleAfter", type: "uint64" },
+      { name: "status", type: "uint8" },
+      { name: "outcome", type: "uint8" },
+      { name: "evidenceHash", type: "bytes32" },
+      { name: "observedValue", type: "int256" },
+      { name: "yesPool", type: "uint256" },
+      { name: "noPool", type: "uint256" },
+    ],
+    stateMutability: "view",
+  },
+  {
+    type: "function",
+    name: "terms",
+    inputs: [{ name: "", type: "uint256" }],
+    outputs: [
+      { name: "feed", type: "address" },
+      { name: "strikePrice", type: "uint64" },
+      { name: "expiryTime", type: "uint64" },
+      { name: "maxStaleness", type: "uint32" },
+    ],
+    stateMutability: "view",
+  },
+  {
+    type: "function",
+    name: "symbolFor",
+    inputs: [{ name: "", type: "address" }],
+    outputs: [{ name: "", type: "string" }],
+    stateMutability: "view",
+  },
+] as const;
+
+/**
+ * Stock and reserve markets are read identically — same base, same `terms`
+ * shape — and differ only in which contract they came from and what the
+ * category is called. One reader, two callers, so the two cannot drift.
+ */
+async function readFeedMarkets(
+  address: `0x${string}`,
+  categoryId: "stocks" | "reserves",
+): Promise<Market[]> {
+  const contract = { address, abi: feedMarketReadAbi } as const;
   const n = Number(
     (await publicClient.readContract({
-      ...stockContract,
+      ...contract,
       functionName: "marketCount",
     })) as bigint,
   );
@@ -163,8 +234,8 @@ async function readStockMarkets(): Promise<Market[]> {
 
   const results = await publicClient.multicall({
     contracts: Array.from({ length: n }, (_, i) => i).flatMap((i) => [
-      { ...stockContract, functionName: "core" as const, args: [BigInt(i)] as const },
-      { ...stockContract, functionName: "terms" as const, args: [BigInt(i)] as const },
+      { ...contract, functionName: "core" as const, args: [BigInt(i)] as const },
+      { ...contract, functionName: "terms" as const, args: [BigInt(i)] as const },
     ]),
     allowFailure: false,
   });
@@ -177,7 +248,7 @@ async function readStockMarkets(): Promise<Market[]> {
   );
   const symbols = (await publicClient.multicall({
     contracts: feeds.map((feed) => ({
-      ...stockContract,
+      ...contract,
       functionName: "symbolFor" as const,
       args: [feed] as const,
     })),
@@ -191,9 +262,9 @@ async function readStockMarkets(): Promise<Market[]> {
     const t = results[i * 2 + 1] as unknown as [`0x${string}`, bigint, bigint, number];
     return {
       id: i,
-      key: marketKey("stocks", i),
-      contract: STOCK_MARKET_ADDRESS,
-      categoryId: "stocks",
+      key: marketKey(categoryId, i),
+      contract: address,
+      categoryId,
       question: c[0],
       closeTime: Number(c[1]),
       settleAfter: Number(c[2]),
@@ -217,12 +288,13 @@ async function readStockMarkets(): Promise<Market[]> {
 
 /** Every market across every deployed market contract. */
 export async function readMarkets(): Promise<Market[]> {
-  const [flights, crypto, stocks] = await Promise.all([
+  const [flights, crypto, stocks, reserves] = await Promise.all([
     readFlightMarkets(),
     readCryptoMarkets(),
-    readStockMarkets(),
+    readFeedMarkets(STOCK_MARKET_ADDRESS, "stocks"),
+    readFeedMarkets(RESERVE_MARKET_ADDRESS, "reserves"),
   ]);
-  return [...flights, ...crypto, ...stocks];
+  return [...flights, ...crypto, ...stocks, ...reserves];
 }
 
 export interface WalletStake {
@@ -332,12 +404,13 @@ export async function readStakeEvents(): Promise<StakeEvent[]> {
       })),
     );
 
-  const [flights, crypto, stocks] = await Promise.all([
+  const [flights, crypto, stocks, reserves] = await Promise.all([
     read(MARKET_ADDRESS, "flights"),
     read(CRYPTO_MARKET_ADDRESS, "crypto"),
     read(STOCK_MARKET_ADDRESS, "stocks"),
+    read(RESERVE_MARKET_ADDRESS, "reserves"),
   ]);
-  return [...flights, ...crypto, ...stocks];
+  return [...flights, ...crypto, ...stocks, ...reserves];
 }
 
 export async function readSettledEvents(): Promise<SettledEvent[]> {

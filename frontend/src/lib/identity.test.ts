@@ -29,7 +29,7 @@ const base = {
   noPool: 1_000_000n,
 };
 
-/** Same numeric id in all three contracts — the collision the key exists for. */
+/** Same numeric id in every contract — the collision the key exists for. */
 export const flight0: Market = {
   ...base,
   id: 0,
@@ -71,7 +71,22 @@ export const stock0: Market = {
   observedPrice: 0n,
 };
 
-const all = [flight0, crypto0, stock0];
+export const reserve0: Market = {
+  ...base,
+  id: 0,
+  key: marketKey("reserves", 0),
+  contract: "0xa768Be2741A0464b81606649eCa45bfF7aD4d939",
+  categoryId: "reserves",
+  question: "Will stETH reserves be at or above 9,000,000?",
+  symbol: "STETH",
+  feed: "0x8328e01902A47942Eecb9DBF97d6bF9dd3bd07E6",
+  strikePrice: 900_000_000_000_000n,
+  expiryTime: 2_000_003_000,
+  maxStaleness: 172_800,
+  observedPrice: 0n,
+};
+
+const all = [flight0, crypto0, stock0, reserve0];
 
 describe("contractFor", () => {
   it("routes every market to the contract it was read from", () => {
@@ -85,14 +100,14 @@ describe("contractFor", () => {
    * markets, three categories, but only two distinct destinations, because
    * anything not crypto fell through to flights.
    */
-  it("gives three distinct categories three distinct destinations", () => {
+  it("gives every category its own distinct destination", () => {
     const destinations = new Set(all.map((m) => contractFor(m).address.toLowerCase()));
     expect(destinations.size).toBe(all.length);
   });
 
   it("never sends a non-flight market to the flight contract", () => {
     const flightAddress = contractFor(flight0).address.toLowerCase();
-    for (const m of [crypto0, stock0]) {
+    for (const m of [crypto0, stock0, reserve0]) {
       expect(contractFor(m).address.toLowerCase()).not.toBe(flightAddress);
     }
   });
@@ -117,7 +132,7 @@ describe("category registry", () => {
    */
   it("marks exactly the categories that have markets as live", () => {
     const live = LIVE_CATEGORIES.map((c) => c.id).sort();
-    expect(live).toEqual(["crypto", "flights", "stocks"]);
+    expect(live).toEqual(["crypto", "flights", "reserves", "stocks"]);
   });
 
   it("has no duplicate ids", () => {

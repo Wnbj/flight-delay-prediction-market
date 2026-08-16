@@ -15,7 +15,14 @@ export enum Outcome {
   Void = 3,
 }
 
-export type CategoryId = "flights" | "sports" | "crypto" | "stocks" | "pop" | "current";
+export type CategoryId =
+  | "flights"
+  | "sports"
+  | "crypto"
+  | "stocks"
+  | "reserves"
+  | "pop"
+  | "current";
 
 export type Side = "yes" | "no";
 
@@ -80,13 +87,30 @@ export interface StockMarket extends MarketBase {
  * reading a flight's `thresholdMinutes` off a crypto market a compile error
  * instead of a silent `undefined` rendered to the user.
  */
-export type Market = FlightMarket | CryptoMarket | StockMarket;
+/**
+ * Proof-of-Reserve and fund-NAV markets. Structurally the same terms as a
+ * stock market, but a different contract with a different settlement rule —
+ * reserves have no trading session, so they are never voided merely for
+ * sitting still. Kept as its own type so the two cannot be confused.
+ */
+export interface ReserveMarket extends MarketBase {
+  categoryId: "reserves";
+  symbol: string;
+  feed: `0x${string}`;
+  /** Strike and observed level both carry 8 decimals, whatever the feed uses. */
+  strikePrice: bigint;
+  expiryTime: number;
+  maxStaleness: number;
+  observedPrice: bigint;
+}
+
+export type Market = FlightMarket | CryptoMarket | StockMarket | ReserveMarket;
 
 /** Markets whose terms are a price against a strike, whatever the asset. */
-export type PriceMarket = CryptoMarket | StockMarket;
+export type PriceMarket = CryptoMarket | StockMarket | ReserveMarket;
 
 export function isPriceMarket(m: Market): m is PriceMarket {
-  return m.categoryId === "crypto" || m.categoryId === "stocks";
+  return m.categoryId === "crypto" || m.categoryId === "stocks" || m.categoryId === "reserves";
 }
 
 /**

@@ -6,7 +6,7 @@ import {
   formatPercent,
   formatTimestamp,
   formatToken,
-  formatUsd,
+  formatMarketValue,
   shortAddress,
 } from "../lib/format";
 import {
@@ -214,10 +214,10 @@ export function Detail({
                       value={
                         settlement.outcome === Outcome.Void
                           ? "—"
-                          : formatUsd(settlement.observedValue)
+                          : formatMarketValue(market.categoryId, settlement.observedValue)
                       }
                     />
-                    <Stat label="Strike" value={formatUsd(market.strikePrice)} />
+                    <Stat label="Strike" value={formatMarketValue(market.categoryId, market.strikePrice)} />
                   </>
                 )}
               </div>
@@ -280,7 +280,7 @@ export function Detail({
                 ) : (
                   <>
                     Resolves <strong>Yes</strong> if {priceAssetLabel(market)} is at or above{" "}
-                    {formatUsd(market.strikePrice)} at {formatTimestamp(market.expiryTime)}.
+                    {formatMarketValue(market.categoryId, market.strikePrice)} at {formatTimestamp(market.expiryTime)}.
                     Resolves <strong>No</strong> if it is below.
                   </>
                 )}
@@ -296,7 +296,7 @@ export function Detail({
                 <Stat label="Pool" value={formatToken(totalPool(market))} />
                 <Stat label="Backers" value={String(traders)} />
                 {market.categoryId !== "flights" && (
-                  <Stat label="Strike" value={formatUsd(market.strikePrice)} />
+                  <Stat label="Strike" value={formatMarketValue(market.categoryId, market.strikePrice)} />
                 )}
                 <Stat label="Closes" value={formatTimestamp(market.closeTime)} />
                 <Stat label="Settleable from" value={formatTimestamp(market.settleAfter)} />
@@ -372,10 +372,10 @@ export function Detail({
                   <>
                     <li>
                       <strong>Yes</strong> — {priceAssetLabel(market)} at or above{" "}
-                      {formatUsd(market.strikePrice)} at expiry.
+                      {formatMarketValue(market.categoryId, market.strikePrice)} at expiry.
                     </li>
                     <li>
-                      <strong>No</strong> — below {formatUsd(market.strikePrice)} at expiry.
+                      <strong>No</strong> — below {formatMarketValue(market.categoryId, market.strikePrice)} at expiry.
                     </li>
                   </>
                 )}

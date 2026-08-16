@@ -9,5 +9,6 @@
   "stockContractAddress": "0x0000000000000000000000000000000000000000",
   "sweepSchedule": "0 0,30 * * * *",
   "apiKeySecretId": "",
-  "apiKeySecretNamespace": "main"
+  "apiKeySecretNamespace": "main",
+  "reserveContractAddress": "0x0000000000000000000000000000000000000000"
 }

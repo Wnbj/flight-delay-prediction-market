@@ -1,5 +1,5 @@
 import { category } from "../lib/categories";
-import { formatToken, formatPercent, formatUsd } from "../lib/format";
+import { formatToken, formatPercent, formatMarketValue } from "../lib/format";
 import { impliedYesPercent, isOneSided, statusLabel, totalPool } from "../lib/parimutuel";
 import {
   isPriceMarket,
@@ -78,7 +78,7 @@ export function MarketCard({
           actually distinguishes them. */}
       {isPriceMarket(market) && (
         <div className="muted" style={{ fontSize: 12 }}>
-          {priceAssetLabel(market)} · strike {formatUsd(market.strikePrice)}
+          {priceAssetLabel(market)} · strike {formatMarketValue(market.categoryId, market.strikePrice)}
         </div>
       )}
 

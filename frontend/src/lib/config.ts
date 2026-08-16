@@ -14,6 +14,9 @@ export const CRYPTO_MARKET_ADDRESS = (import.meta.env.VITE_CRYPTO_MARKET_ADDRESS
 export const STOCK_MARKET_ADDRESS = (import.meta.env.VITE_STOCK_MARKET_ADDRESS ??
   "0x451bcdB90EC6f6F5f40B5B2578aef641e36b71ca") as `0x${string}`;
 
+export const RESERVE_MARKET_ADDRESS = (import.meta.env.VITE_RESERVE_MARKET_ADDRESS ??
+  "0xa768Be2741A0464b81606649eCa45bfF7aD4d939") as `0x${string}`;
+
 export const TOKEN_ADDRESS = (import.meta.env.VITE_TOKEN_ADDRESS ??
   "0xcd123a8d74ef062dddd2287e87bc88eb3b208b54") as `0x${string}`;
 

@@ -101,6 +101,13 @@ const feedAbi = [
   },
   {
     type: "function",
+    name: "decimals",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "uint8" }],
+  },
+  {
+    type: "function",
     name: "getRoundData",
     stateMutability: "view",
     inputs: [{ name: "roundId", type: "uint80" }],
@@ -146,12 +153,15 @@ export function useFeedRoundHistory(
     const load = async () => {
       setLoading(true);
       try {
-        const latest = (await publicClient.readContract({
-          address: feed,
-          abi: feedAbi,
-          functionName: "latestRoundData",
-        })) as readonly [bigint, bigint, bigint, bigint, bigint];
+        // Feeds do not agree on scale: CSPX publishes 8 decimals, stETH
+        // Proof of Reserves 18. Dividing everything by 1e8 plots a reserve
+        // feed ten orders of magnitude off its real level.
+        const [latest, decimals] = (await Promise.all([
+          publicClient.readContract({ address: feed, abi: feedAbi, functionName: "latestRoundData" }),
+          publicClient.readContract({ address: feed, abi: feedAbi, functionName: "decimals" }),
+        ])) as [readonly [bigint, bigint, bigint, bigint, bigint], number];
         const latestId = latest[0];
+        const scale = 10 ** Number(decimals);
 
         const results = await publicClient.multicall({
           contracts: Array.from({ length: ROUND_LOOKBACK }, (_, i) => ({
@@ -168,7 +178,7 @@ export function useFeedRoundHistory(
           .filter((r) => r.status === "success")
           .map((r) => r.result as readonly [bigint, bigint, bigint, bigint, bigint])
           .filter((r) => r[3] > 0n) // updatedAt === 0 means the round was never published
-          .map((r) => ({ time: Number(r[3]), value: Number(r[1]) / 1e8 }))
+          .map((r) => ({ time: Number(r[3]), value: Number(r[1]) / scale }))
           .filter((p) => p.time >= cutoff)
           .sort((a, b) => a.time - b.time);
 

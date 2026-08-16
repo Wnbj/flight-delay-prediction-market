@@ -25,7 +25,10 @@ export function PriceChart({ market }: { market: Market }) {
   const [range, setRange] = useState<RangeKey>(market.categoryId === "crypto" ? "1H" : "1W");
 
   const symbol = market.categoryId === "crypto" ? market.asset : null;
-  const feed = market.categoryId === "stocks" ? market.feed : null;
+  // Both feed-settled categories, not just stocks — reserves are read the
+  // same way and were silently getting no chart at all.
+  const feed =
+    market.categoryId === "stocks" || market.categoryId === "reserves" ? market.feed : null;
 
   const { candles, loading: candlesLoading } = useCandleHistory(symbol, range);
   const { points, loading: pointsLoading } = useFeedRoundHistory(feed, range);
@@ -33,6 +36,12 @@ export function PriceChart({ market }: { market: Market }) {
   // Type-narrowed without being a hook, so it can sit after the hooks above
   // without breaking the rule that every hook runs on every render.
   const strike = isPriceMarket(market) ? toUsdNumber(market.strikePrice) : 0;
+
+  // A reserve level is a token count, not a dollar amount.
+  const formatScaled = (v: number) =>
+    market.categoryId === "reserves"
+      ? v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+      : formatUsdNumber(v);
   const last = symbol ? candles.at(-1)?.close : points.at(-1)?.value;
   const first = symbol ? candles[0]?.open : points[0]?.value;
   const changePct = last !== undefined && first ? ((last - first) / first) * 100 : null;
@@ -71,12 +80,12 @@ export function PriceChart({ market }: { market: Market }) {
             className="muted"
             style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: "0.06em" }}
           >
-            {priceAssetLabel(market)} · strike {formatUsdNumber(strike)}
+            {priceAssetLabel(market)} · strike {formatScaled(strike)}
           </div>
           {last !== undefined ? (
             <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
               <span className="heading" style={{ fontSize: 26 }}>
-                {formatUsdNumber(last)}
+                {formatScaled(last)}
               </span>
               {changePct !== null && (
                 <span

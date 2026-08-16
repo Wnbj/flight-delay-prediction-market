@@ -97,6 +97,20 @@ export function formatUsd(scaled: bigint): string {
   return `$${whole.toLocaleString()}.${cents.toString().padStart(2, "0")}`;
 }
 
+/**
+ * A market's strike or observed value, in the unit that market actually
+ * measures.
+ *
+ * Crypto and stock markets are quoted in dollars. A reserve market is not: its
+ * level is a COUNT OF TOKENS or fund shares — stETH Proof of Reserves reports
+ * 9,505,650.86 stETH, not $9.5m — so prefixing it with a currency symbol would
+ * state a figure the feed never published.
+ */
+export function formatMarketValue(categoryId: string, scaled: bigint): string {
+  const money = formatUsd(scaled);
+  return categoryId === "reserves" ? money.slice(1) : money;
+}
+
 /** The 8-decimal on-chain price as a plain number, for comparing against spot. */
 export function toUsdNumber(scaled: bigint): number {
   return Number(scaled) / 1e8;
