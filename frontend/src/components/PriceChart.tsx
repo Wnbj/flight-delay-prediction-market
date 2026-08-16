@@ -52,12 +52,21 @@ export function PriceChart({ market }: { market: Market }) {
   const first = symbol ? candles[0]?.open : points[0]?.value;
   const changePct = last !== undefined && first ? ((last - first) / first) * 100 : null;
 
+  /**
+   * Scaled to the PRICE ACTION only — the strike is deliberately not part of
+   * the range.
+   *
+   * Every rung of a strike ladder plots the same asset over the same window, so
+   * the chart should not move when you switch between them; only the strike
+   * line should. Including the strike in the range made a far out-of-the-money
+   * rung stretch the axis and squash the candles, so switching strikes appeared
+   * to change the price history itself.
+   */
   const { min, max } = useMemo(() => {
     const values = symbol
       ? candles.flatMap((c) => [c.high, c.low])
       : points.map((p) => p.value);
     if (values.length === 0) return { min: strike * 0.99, max: strike * 1.01 };
-    values.push(strike);
     const lo = Math.min(...values);
     const hi = Math.max(...values);
     const pad = (hi - lo) * 0.1 || hi * 0.01 || 1;
@@ -65,6 +74,10 @@ export function PriceChart({ market }: { market: Market }) {
   }, [candles, points, symbol, strike]);
 
   if (!isPriceMarket(market)) return null;
+
+  // A strike outside the window is not drawn at the edge, which would read as
+  // "the strike is here". It is said in words instead.
+  const strikeInView = strike >= min && strike <= max;
 
   const y = (v: number) => (max === min ? 150 : 300 - ((v - min) / (max - min)) * 300);
   const loading = symbol ? candlesLoading : pointsLoading;
@@ -134,16 +147,18 @@ export function PriceChart({ market }: { market: Market }) {
         style={{ marginTop: "var(--space-3)" }}
         aria-hidden="true"
       >
-        <line
-          x1={0}
-          x2={1000}
-          y1={y(strike)}
-          y2={y(strike)}
-          stroke="var(--color-neutral-500)"
-          strokeWidth={1}
-          strokeDasharray="5 5"
-          vectorEffect="non-scaling-stroke"
-        />
+        {strikeInView && (
+          <line
+            x1={0}
+            x2={1000}
+            y1={y(strike)}
+            y2={y(strike)}
+            stroke="var(--color-neutral-500)"
+            strokeWidth={1}
+            strokeDasharray="5 5"
+            vectorEffect="non-scaling-stroke"
+          />
+        )}
 
         {symbol
           ? candles.map((c, i) => {
@@ -187,6 +202,13 @@ export function PriceChart({ market }: { market: Market }) {
               />
             )}
       </svg>
+
+      {hasData && !strikeInView && (
+        <div className="muted" style={{ fontSize: 11 }}>
+          Strike {formatScaled(strike)} is {strike > max ? "above" : "below"} this range — the
+          chart is scaled to the price, so it stays put as you move along the ladder.
+        </div>
+      )}
 
       {!hasData && !loading && (
         <div className="muted" style={{ fontSize: 11 }}>
