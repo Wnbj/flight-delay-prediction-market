@@ -10,7 +10,14 @@ makes it worth keeping current — a stale status file is more misleading than n
 status file, because it is read as fact rather than skimmed as notes. The
 timestamp below is the first thing to distrust.
 
-Last updated **2026-08-16 16:03 UTC**. Working tree clean, `main` level with
+**Not tracked by git.** It is working notes about a moment, not documentation of
+the system, and it goes stale between sessions in a way a commit history should
+not have to carry. It lives only on this machine — so it is not backed up, and a
+fresh clone will not have it. What the system is belongs in README.md, how to
+operate it in RUNBOOK.md; if something written here matters to anyone else, it
+belongs in one of those instead.
+
+Last updated **2026-08-16 23:01 UTC**. Working tree clean, `main` level with
 `origin/main`.
 
 ---
@@ -144,12 +151,42 @@ new address and orphaned markets. It moves whenever it is next redeployed.
 
 ---
 
+## The live settlement view, `/live`
+
+Built for showing the project: a page nobody tells what to display. It reads
+Sepolia logs every 6 seconds, so a settlement requested in a terminal appears on
+it seconds later with no connection between the two. Verified by doing exactly
+that — settling a stuck crypto market from the shell moved the page from one in
+flight to none, untouched.
+
+Four modules, each testable on its own:
+
+- `lib/settlementEvents.ts` — decodes all four log families. The one that
+  matters is `ReportProcessed` on the forwarder, whose signature is not in this
+  repo: it was found by hashing candidates against a real receipt until topic0
+  matched, `ReportProcessed(address,bytes32,bytes2,bool)`. **A refused report is
+  the only on-chain evidence a delivery happened at all** — the receiver reverts
+  inside `onReport` and emits nothing.
+- `lib/pipeline.ts` — the pure fold. States come from logs, never from
+  `market.status`, because `AmmMarket.Status` is offset by one and `Locked` is
+  never assigned by anything.
+- `lib/blockTime.ts`, `hooks/useSettlementFeed.ts` — timestamps and polling.
+- `views/Live.tsx`.
+
+**`ATTESTATION_LABEL` in `config.ts` is the only place that says how a report
+was attested**, used by `/live` and by the market settlement card. When deploy
+access lands, `VITE_DON_DEPLOYED=true` is the whole change.
+
+What is left for the demo itself, deliberately not built yet: a script that
+filters the CLI's output to the readable lines, and a paid RPC for the day.
+
+---
+
 ## What was about to happen next
 
-Nothing is half-finished. Multi-LP is built, deployed and exercised end to end,
-and the naming tidy-ups are done: `lib/parimutuel.ts` is now `lib/pricing.ts`
-(with `outcomeLabel`/`statusLabel` moved to `format.ts`, where display belongs),
-and `StakeEvent`/`readStakeEvents` are `TradeEvent`/`readTradeEvents`.
+Nothing is half-finished. Multi-LP is built, deployed and exercised end to end;
+the naming tidy-ups are done (`lib/parimutuel.ts` → `lib/pricing.ts`,
+`StakeEvent` → `TradeEvent`); and `/live` is built and verified.
 
 The natural next steps, in rough order of value:
 
@@ -166,6 +203,26 @@ The natural next steps, in rough order of value:
 ---
 
 ## Things that bit repeatedly
+
+**The RPC answers identical queries with different results, and reports no
+error.** Measured with four back-to-back full log scans: 23/27/27/27
+settlements, 28/24/24/28 requests, 39/39/33/39 reports. The short answers always
+miss the NEWEST logs, which is the other face of asking for `"latest"` — the
+upper bound is resolved by whichever load-balanced node serves the call, and a
+lagging one answers completely from its own point of view.
+
+Consequence for anything reading logs repeatedly: **never delete on the strength
+of a response.** The live feed originally replaced a scanned window, which is the
+textbook way to make reorgs self-correcting, and it took five settled markets off
+the screen and put them back to "waiting". Union instead; a page reload is the
+reorg story.
+
+**Do not attribute a refused report to a market by guessing.** `ReportProcessed`
+names a receiver contract and no market id. A fallback of "the most recent
+candidate" pinned cron-sweep duplicates onto flight markets that had settled and
+paid out days earlier, and then hid them, because the state check looked at
+payouts before it looked at the refusal. Both bugs were found by running the page
+against real history, not by reading the code.
 
 Worth knowing before touching the AMM again.
 
