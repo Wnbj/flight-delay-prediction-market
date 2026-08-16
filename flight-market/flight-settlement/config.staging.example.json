@@ -10,5 +10,6 @@
   "sweepSchedule": "0 0,30 * * * *",
   "apiKeySecretId": "",
   "apiKeySecretNamespace": "main",
-  "reserveContractAddress": "0x0000000000000000000000000000000000000000"
+  "reserveContractAddress": "0x0000000000000000000000000000000000000000",
+  "ammContractAddress": "0x0000000000000000000000000000000000000000"
 }

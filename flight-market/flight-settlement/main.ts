@@ -90,6 +90,12 @@ export type Config = {
    */
   cryptoContractAddress?: string
   /**
+   * AmmMarket address. It emits the same SettlementRequested event as
+   * CryptoMarket, so it joins that trigger's address list rather than getting
+   * a handler of its own.
+   */
+  ammContractAddress?: string
+  /**
    * StockMarket address. Empty string leaves the stock handler unregistered.
    */
   stockContractAddress?: string
@@ -968,10 +974,20 @@ export type CryptoTerms = {
   asset: number
   strikePrice: bigint
   expiryTime: number
+  /**
+   * Where to send the signed report.
+   *
+   * Taken from the contract the trigger log came FROM, rather than a fixed
+   * config address, because two contracts now emit this identical event:
+   * CryptoMarket and AmmMarket. They price the same question differently but
+   * settle from the same data, so they share a handler — and a hardcoded
+   * receiver would have quietly delivered one contract's result to the other.
+   */
+  receiver: string
 }
 
 const settleCryptoMarket = (runtime: Runtime<Config>, t: CryptoTerms): string => {
-  const { marketId, asset, strikePrice, expiryTime } = t
+  const { marketId, asset, strikePrice, expiryTime, receiver } = t
   const symbol = ASSET_SYMBOLS[Number(asset)]
   if (!symbol) throw new Error(`Unknown asset index ${asset}`)
 
@@ -1048,7 +1064,7 @@ const settleCryptoMarket = (runtime: Runtime<Config>, t: CryptoTerms): string =>
 
   const txResult = evmClient
     .writeReport(runtime, {
-      receiver: runtime.config.cryptoContractAddress ?? "",
+      receiver,
       report: signedReport,
       gasConfig: { gasLimit: runtime.config.gasLimit },
     })
@@ -1082,6 +1098,7 @@ export const onCryptoSettlementRequested = (
     asset: Number(asset),
     strikePrice: BigInt(strikePrice),
     expiryTime: Number(expiryTime),
+    receiver: bytesToHex(triggerEvent.address),
   })
 }
 
@@ -1605,6 +1622,7 @@ export const onSweepCrypto = (runtime: Runtime<Config>): string => {
       asset: Number(t[0]),
       strikePrice: BigInt(t[1]),
       expiryTime: Number(t[2]),
+      receiver: address,
     })
     settled++
     if (settled >= MAX_SETTLEMENTS_PER_SWEEP) break
@@ -1867,7 +1885,12 @@ export const initWorkflow = (config: Config) => {
       handler(
         evmClient.logTrigger(
           logTriggerConfig({
-            addresses: [config.cryptoContractAddress as `0x${string}`],
+            addresses: [
+              config.cryptoContractAddress as `0x${string}`,
+              ...(config.ammContractAddress && config.ammContractAddress !== ""
+                ? [config.ammContractAddress as `0x${string}`]
+                : []),
+            ],
             topics: [[CRYPTO_SETTLEMENT_REQUESTED_TOPIC]],
             confidence: "LATEST",
           }),
