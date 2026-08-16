@@ -7,6 +7,7 @@ import {
   type Address,
 } from "viem";
 import { getActiveProvider } from "./providers";
+import { readSettlementLogs } from "./settlementEvents";
 import {
   AMM_MARKET_ADDRESS,
   chain,
@@ -620,14 +621,6 @@ const LIQUIDITY_ADDED_EVENT = parseAbiItem(
 const LIQUIDITY_WITHDRAWN_EVENT = parseAbiItem(
   "event LiquidityWithdrawn(uint256 indexed marketId, address indexed provider, uint256 lpShares, uint256 amount)",
 );
-// Both contracts emit Staked identically. Settled differs: the flight contract
-// predates the shared base and still declares int32, the base uses int256.
-const FLIGHT_SETTLED_EVENT = parseAbiItem(
-  "event Settled(uint256 indexed marketId, uint8 outcome, int32 observedDelay, bytes32 evidenceHash)",
-);
-const CRYPTO_SETTLED_EVENT = parseAbiItem(
-  "event Settled(uint256 indexed marketId, uint8 outcome, int256 observedValue, bytes32 evidenceHash)",
-);
 
 /**
  * Public RPCs cap getLogs spans, so walk the range in chunks.
@@ -638,13 +631,23 @@ const CRYPTO_SETTLED_EVENT = parseAbiItem(
  * rejects the range as extending beyond its head. Letting the serving node
  * decide its own upper bound removes the mismatch entirely.
  */
-async function logsInChunks<T>(
+export async function logsInChunks<T>(
   fetchRange: (from: bigint, to: bigint | "latest") => Promise<T[]>,
+  /**
+   * Where to start. Defaults to the deploy block — a full history read. The
+   * live feed passes a recent block instead, which is the difference between
+   * one request and a walk over the whole chain on every poll.
+   */
+  fromBlock: bigint = DEPLOY_BLOCK,
 ): Promise<T[]> {
   const latest = await publicClient.getBlockNumber();
   const STEP = 45_000n;
   const out: T[] = [];
-  for (let from = DEPLOY_BLOCK; from <= latest; from += STEP) {
+  // A caller may hand us a cursor ahead of the head this node reports — the
+  // same load-balancer skew described above, seen from the other side. One
+  // chunk ending at "latest" is still correct and still returns nothing.
+  const start = fromBlock > latest ? latest : fromBlock;
+  for (let from = start; from <= latest; from += STEP) {
     const end = from + STEP - 1n;
     const reachesHead = end >= latest;
     out.push(...(await fetchRange(from, reachesHead ? "latest" : end)));
@@ -779,100 +782,29 @@ export async function readLpEvents(): Promise<LpEvent[]> {
   ].sort((a, b) => (a.blockNumber === b.blockNumber ? 0 : a.blockNumber < b.blockNumber ? -1 : 1));
 }
 
+/**
+ * Settlements, for the market detail card.
+ *
+ * A thin projection of the settlement log reader rather than its own decoder.
+ * Two decoders for one event drift — and this one already drifted twice, first
+ * missing the AMM and then the reserve contract, both silently.
+ */
 export async function readSettledEvents(): Promise<SettledEvent[]> {
-  // The stock contract inherits the same base as the crypto one, so it emits
-  // the identical int256 Settled event.
-  const [flightLogs, cryptoLogs, stockLogs, ammLogs, reserveLogs] = await Promise.all([
-    logsInChunks((fromBlock, toBlock) =>
-      publicClient.getLogs({
-        address: FLIGHT_MARKET_ADDRESS,
-        event: FLIGHT_SETTLED_EVENT,
-        fromBlock,
-        toBlock,
-      }),
-    ),
-    logsInChunks((fromBlock, toBlock) =>
-      publicClient.getLogs({
-        address: CRYPTO_MARKET_ADDRESS,
-        event: CRYPTO_SETTLED_EVENT,
-        fromBlock,
-        toBlock,
-      }),
-    ),
-    logsInChunks((fromBlock, toBlock) =>
-      publicClient.getLogs({
-        address: STOCK_MARKET_ADDRESS,
-        event: CRYPTO_SETTLED_EVENT,
-        fromBlock,
-        toBlock,
-      }),
-    ),
-    // The AMM's Settled is byte-identical to the crypto one — deliberately, so
-    // one workflow handler settles both. It was simply never scanned, which is
-    // why an AMM market has never shown its settlement record on screen.
-    logsInChunks((fromBlock, toBlock) =>
-      publicClient.getLogs({
-        address: AMM_MARKET_ADDRESS,
-        event: CRYPTO_SETTLED_EVENT,
-        fromBlock,
-        toBlock,
-      }),
-    ),
-    // Reserves, for the same reason and with the same symptom. Four contracts
-    // emit this identical event and each needed its own line here, which is
-    // precisely the shape of thing that gets forgotten twice.
-    logsInChunks((fromBlock, toBlock) =>
-      publicClient.getLogs({
-        address: RESERVE_MARKET_ADDRESS,
-        event: CRYPTO_SETTLED_EVENT,
-        fromBlock,
-        toBlock,
-      }),
-    ),
-  ]);
-
-  return [
-    ...flightLogs.map((l) => ({
-      marketKey: marketKey("flights", Number(l.args.marketId!)),
-      outcome: Number(l.args.outcome!) as Outcome,
-      observedValue: BigInt(l.args.observedDelay!),
-      evidenceHash: l.args.evidenceHash!,
-      blockNumber: l.blockNumber!,
-      txHash: l.transactionHash!,
-    })),
-    ...cryptoLogs.map((l) => ({
-      marketKey: marketKey("crypto", Number(l.args.marketId!)),
-      outcome: Number(l.args.outcome!) as Outcome,
-      observedValue: l.args.observedValue!,
-      evidenceHash: l.args.evidenceHash!,
-      blockNumber: l.blockNumber!,
-      txHash: l.transactionHash!,
-    })),
-    ...stockLogs.map((l) => ({
-      marketKey: marketKey("stocks", Number(l.args.marketId!)),
-      outcome: Number(l.args.outcome!) as Outcome,
-      observedValue: l.args.observedValue!,
-      evidenceHash: l.args.evidenceHash!,
-      blockNumber: l.blockNumber!,
-      txHash: l.transactionHash!,
-    })),
-    ...ammLogs.map((l) => ({
-      marketKey: marketKey("amm", Number(l.args.marketId!)),
-      outcome: Number(l.args.outcome!) as Outcome,
-      observedValue: l.args.observedValue!,
-      evidenceHash: l.args.evidenceHash!,
-      blockNumber: l.blockNumber!,
-      txHash: l.transactionHash!,
-    })),
-    ...reserveLogs.map((l) => ({
-      marketKey: marketKey("reserves", Number(l.args.marketId!)),
-      outcome: Number(l.args.outcome!) as Outcome,
-      observedValue: l.args.observedValue!,
-      evidenceHash: l.args.evidenceHash!,
-      blockNumber: l.blockNumber!,
-      txHash: l.transactionHash!,
-    })),
-  ];
+  const { logs } = await readSettlementLogs({ families: ["settled"] });
+  return logs.flatMap((l) =>
+    l.kind === "settled"
+      ? [
+          {
+            marketKey: l.marketKey,
+            outcome: l.outcome as Outcome,
+            observedValue: l.observedValue,
+            evidenceHash: l.evidenceHash,
+            blockNumber: l.blockNumber,
+            txHash: l.txHash,
+          },
+        ]
+      : [],
+  );
 }
 
 // ---- writes ---------------------------------------------------------------

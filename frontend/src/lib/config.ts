@@ -42,10 +42,32 @@ export const chain = defineChain({
   rpcUrls: { default: { http: [RPC_URL] } },
 });
 
+/**
+ * The KeystoneForwarder that delivers reports to our receivers.
+ *
+ * Overridable because it is not a fixed property of the system: this address is
+ * the MockKeystoneForwarder that `cre workflow simulate --broadcast` calls, and
+ * it changes when reports start arriving from a real DON. It is also shared
+ * with other people's workflows on Sepolia, so anything reading its logs must
+ * filter by receiver rather than assume every report is ours.
+ */
+export const FORWARDER_ADDRESS = (import.meta.env.VITE_FORWARDER_ADDRESS ??
+  "0x15fC6ae953E024d975e77382eEeC56A9101f9F88") as `0x${string}`;
+
+/**
+ * Whether reports are being delivered by a real DON yet.
+ *
+ * Flipping this is the whole change when deploy access arrives — it decides
+ * what the UI is allowed to claim about how a settlement was attested, and
+ * nothing else in the app needs to know.
+ */
+export const DON_DEPLOYED = import.meta.env.VITE_DON_DEPLOYED === "true";
+
 export const EXPLORER = "https://sepolia.etherscan.io";
 
 export const txUrl = (hash: string) => `${EXPLORER}/tx/${hash}`;
 export const addressUrl = (addr: string) => `${EXPLORER}/address/${addr}`;
+export const blockUrl = (block: bigint) => `${EXPLORER}/block/${block}`;
 
 /** MockUSDC is 6-decimal, like real USDC. */
 export const TOKEN_DECIMALS = 6;
