@@ -7,7 +7,7 @@ import {
   totalPool,
 } from "./parimutuel";
 import { MarketStatus, Outcome, type Market } from "./types";
-import { crypto0 } from "./identity.test";
+import { amm0, crypto0 } from "./identity.test";
 
 /**
  * The payout maths the UI shows before anyone signs anything.
@@ -137,5 +137,67 @@ describe("isOneSided", () => {
 
   it("does not flag a two-sided book", () => {
     expect(isOneSided(market({ yesPool: 1n, noPool: 1n }))).toBe(false);
+  });
+});
+
+/**
+ * The AMM branches, which this file had no coverage of at all — every case
+ * above uses a parimutuel market, so the four functions that special-case the
+ * AMM were being exercised only indirectly through the views.
+ */
+describe("AMM markets", () => {
+  const amm = (over: Partial<Market> = {}) => ({ ...amm0, ...over }) as Market;
+
+  it("reads the price off yesPriceBps, not off the reserves", () => {
+    const m = amm({ yesPriceBps: 6_282 });
+    expect(impliedYesPercent(m)).toBe(62.82);
+  });
+
+  /**
+   * The reserves are INVERTED relative to a pool ratio: the scarcer YES is in
+   * the pool, the dearer it is. Reading them as parimutuel pools would report
+   * 37% where the market is quoting 63%.
+   */
+  it("does not read the reserves the way a parimutuel pool is read", () => {
+    const yesReserve = 7_692_308n;
+    const noReserve = 13_000_000n;
+    const m = amm({ yesPriceBps: 6_282, yesReserve, noReserve });
+    const asIfParimutuel = Number((yesReserve * 10_000n) / (yesReserve + noReserve)) / 100;
+
+    expect(impliedYesPercent(m)).toBe(62.82);
+    expect(asIfParimutuel).toBeCloseTo(37.18, 1);
+  });
+
+  it("reports the collateral as the money at stake, not the reserves", () => {
+    expect(totalPool(amm({ collateral: 13_000_000n }))).toBe(13_000_000n);
+  });
+
+  /** Every share is individually collateralised, so there is no one-sided void. */
+  it("is never one-sided", () => {
+    expect(isOneSided(amm({ yesReserve: 1n, noReserve: 0n }))).toBe(false);
+  });
+
+  /**
+   * There is no pot to divide and no parimutuel formula that applies, so an
+   * estimate here would be a made-up number — the trade panel quotes the
+   * contract instead.
+   */
+  it("declines to estimate a payout", () => {
+    expect(estimatePayout(amm(), "yes", 1_000_000n)).toBeNull();
+  });
+
+  it("pays one unit per winning share", () => {
+    const m = amm({ status: MarketStatus.Settled, outcome: Outcome.Yes });
+    expect(claimablePayout(m, 5_307_692n, 0n)).toBe(5_307_692n);
+    expect(claimablePayout(m, 0n, 5_307_692n)).toBe(0n);
+  });
+
+  /**
+   * A void pays half a unit per share on EITHER side. Paying both in full is
+   * insolvent on its face — one unit of collateral mints one YES and one NO.
+   */
+  it("pays half a unit per share on a void, either side", () => {
+    const m = amm({ status: MarketStatus.Void, outcome: Outcome.Void });
+    expect(claimablePayout(m, 4_000_000n, 2_000_000n)).toBe(3_000_000n);
   });
 });

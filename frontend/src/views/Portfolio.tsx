@@ -2,7 +2,12 @@ import { useMemo, useState } from "react";
 import type { Address } from "viem";
 import { category } from "../lib/categories";
 import { formatSigned, formatToken } from "../lib/format";
-import { sendAmmRedeem, sendClaim, waitForTx } from "../lib/chain";
+import {
+  sendAmmRedeem,
+  sendAmmWithdrawLiquidity,
+  sendClaim,
+  waitForTx,
+} from "../lib/chain";
 import { MarketStatus, type Market, type Position } from "../lib/types";
 import type { WalletState } from "../hooks/useWallet";
 
@@ -80,6 +85,22 @@ export function Portfolio({
         market.categoryId === "amm"
           ? await sendAmmRedeem(wallet.account as Address, market)
           : await sendClaim(wallet.account as Address, market);
+      await waitForTx(hash);
+      await onRefresh();
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      setError(/User rejected/i.test(msg) ? "Transaction rejected in wallet." : msg.split("\n")[0]);
+    } finally {
+      setClaiming(null);
+    }
+  };
+
+  const doWithdraw = async (market: Market) => {
+    if (!wallet.account) return;
+    setClaiming(`${market.key}:lp`);
+    setError(null);
+    try {
+      const hash = await sendAmmWithdrawLiquidity(wallet.account as Address, market);
       await waitForTx(hash);
       await onRefresh();
     } catch (e) {
@@ -181,13 +202,29 @@ export function Portfolio({
             <tbody>
               {filtered.map((p) => {
                 const cat = category(p.market.categoryId);
-                const size = p.yes + p.no;
+                /**
+                 * `p.cost`, matching the summary cards above. This row used to
+                 * use `p.yes + p.no`, which for an AMM is SHARES rather than
+                 * money — so the table disagreed with its own totals, and the
+                 * disagreement grew with every liquidity position.
+                 */
+                const size = p.cost;
                 const resolved =
                   p.market.status === MarketStatus.Settled ||
                   p.market.status === MarketStatus.Void;
                 const pl = resolved ? p.entitlement - size : null;
-                const side =
-                  p.yes > 0n && p.no > 0n ? "Both" : p.yes > 0n ? "Yes" : "No";
+                // What `redeem`/`claim` alone would pay: the pool slice is a
+                // separate call and must not gate this button.
+                const shareClaim = p.entitlement - (p.lp?.poolValue ?? 0n);
+                const side = p.lp
+                  ? p.yes > 0n || p.no > 0n
+                    ? `LP + ${p.yes > 0n ? "Yes" : "No"}`
+                    : "LP"
+                  : p.yes > 0n && p.no > 0n
+                    ? "Both"
+                    : p.yes > 0n
+                      ? "Yes"
+                      : "No";
 
                 return (
                   <tr key={p.market.key}>
@@ -229,8 +266,15 @@ export function Portfolio({
                         {p.status}
                       </span>
                     </td>
-                    <td>
-                      {p.claimable > 0n && !p.claimed && (
+                    {/*
+                      * TWO claims, two buttons. A provider is owed their shares
+                      * through `redeem` and their slice of the pool through
+                      * `withdrawLiquidity`, each with its own irreversible
+                      * one-shot guard on chain. A single button would fire one
+                      * and strand the other for good.
+                      */}
+                    <td style={{ display: "flex", gap: 6 }}>
+                      {shareClaim > 0n && !p.claimed && (
                         <button
                           className="btn btn-accent"
                           style={{ padding: "4px 10px", fontSize: 13 }}
@@ -244,6 +288,16 @@ export function Portfolio({
                             : p.market.categoryId === "amm"
                               ? "Redeem"
                               : "Claim"}
+                        </button>
+                      )}
+                      {resolved && p.lp && !p.lp.withdrawn && p.lp.poolValue > 0n && (
+                        <button
+                          className="btn"
+                          style={{ padding: "4px 10px", fontSize: 13 }}
+                          disabled={claiming !== null}
+                          onClick={() => void doWithdraw(p.market)}
+                        >
+                          {claiming === `${p.market.key}:lp` ? "Withdrawing…" : "Withdraw LP"}
                         </button>
                       )}
                     </td>

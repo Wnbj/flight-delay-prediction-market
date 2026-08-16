@@ -2,17 +2,20 @@ import { useCallback, useEffect, useState } from "react";
 import type { Address } from "viem";
 import {
   readAllowance,
-  readAmmSeeds,
+  readLpEvents,
   readMarkets,
   readSettledEvents,
   readStakeEvents,
   readTokenBalance,
+  readWalletLp,
   readWalletStakes,
 } from "../lib/chain";
 import { claimablePayout } from "../lib/parimutuel";
+import { attributeFees, buildLpPosition, depositsByMarket } from "../lib/lp";
 import {
   MarketStatus,
   Outcome,
+  type LpEvent,
   type Market,
   type Position,
   type SettledEvent,
@@ -24,12 +27,19 @@ export interface ChainData {
   markets: Market[];
   stakeEvents: StakeEvent[];
   settledEvents: SettledEvent[];
+  lpEvents: LpEvent[];
   positions: Position[];
   balance: bigint;
   /** Keyed by spender (market contract) — ERC-20 allowance is per spender. */
   allowances: Map<string, bigint>;
   loading: boolean;
   error: string | null;
+  /**
+   * Categories whose contract could not be read, named rather than merged into
+   * `error` — a category missing from the list looks identical to a category
+   * with no markets in it, so it has to be said out loud.
+   */
+  failedCategories: { categoryId: string; message: string }[];
   /** Markets loaded but event history did not — charts and leaderboard are thin. */
   historyDegraded: boolean;
   refresh: () => Promise<void>;
@@ -46,11 +56,15 @@ export function derivePositions(
   trades: StakeEvent[] = [],
   account: Address | null = null,
   /**
-   * What each AMM market was seeded with. Needed because seeding is the
-   * maker's purchase and emits no trade: without it their position prices at
-   * zero and reports as pure profit.
+   * Liquidity movements. Needed because providing liquidity emits no trade:
+   * without it a provider's position prices at zero and reports as pure profit.
    */
-  ammSeeds: Map<string, bigint> = new Map(),
+  lpEvents: LpEvent[] = [],
+  /** This wallet's LP stake per market, read from chain. */
+  lpStakes: Map<
+    string,
+    { shares: bigint; totalShares: bigint; withdrawn: boolean; claimable: bigint }
+  > = new Map(),
 ): Position[] {
   const netInByMarket = new Map<string, bigint>();
   for (const e of trades) {
@@ -60,38 +74,58 @@ export function derivePositions(
     netInByMarket.set(e.marketKey, (netInByMarket.get(e.marketKey) ?? 0n) + sign * e.amount);
   }
 
+  const deposits = depositsByMarket(lpEvents, account);
+  const fees = attributeFees(lpEvents, trades);
+
   const out: Position[] = [];
   markets.forEach((m) => {
-    const s = stakes.get(m.key);
-    if (!s || (s.yes === 0n && s.no === 0n)) return;
+    const s = stakes.get(m.key) ?? { yes: 0n, no: 0n, claimed: false };
+    const lpStake = lpStakes.get(m.key);
+
+    /**
+     * A provider in a pool at even money holds NO residual shares at all —
+     * the reserves take the whole deposit — so a position with liquidity in it
+     * is not necessarily a position with shares in it. Skipping on shares
+     * alone made their whole stake vanish from the portfolio.
+     */
+    if (s.yes === 0n && s.no === 0n && !lpStake) return;
 
     let entitlement = claimablePayout(m, s.yes, s.no);
     let cost = m.categoryId === "amm" ? (netInByMarket.get(m.key) ?? 0n) : s.yes + s.no;
 
     /**
-     * The maker is not an ordinary holder. They paid `liquidity` for two
-     * things: the shares they kept and a claim on whatever of the winning side
-     * the pool still holds. Counting only the kept shares would show them
-     * hugely up when the market opened away from even money, and counting only
-     * the pool would miss the position their own price implied.
+     * Liquidity is money at risk in a second way, on top of any shares the
+     * deposit left behind: a pro-rata claim on whatever of the winning side
+     * the pool still holds. Counting only the shares would show a provider
+     * hugely up when the market opened away from even money; counting only the
+     * pool would miss the position their own price implied.
      */
-    if (
-      m.categoryId === "amm" &&
-      account &&
-      m.maker.toLowerCase() === account.toLowerCase()
-    ) {
-      cost += ammSeeds.get(m.key) ?? 0n;
-      if (m.status === MarketStatus.Void) {
-        entitlement += (m.yesReserve + m.noReserve) / 2n;
-      } else if (m.status === MarketStatus.Settled) {
-        entitlement += m.outcome === Outcome.Yes ? m.yesReserve : m.noReserve;
-      }
+    const lp = lpStake
+      ? buildLpPosition(
+          m,
+          lpStake,
+          deposits.get(m.key) ?? 0n,
+          fees.get(m.key)?.get(account?.toLowerCase() ?? "") ?? 0n,
+        )
+      : null;
+
+    /**
+     * The two claims are guarded SEPARATELY on chain — `redeemed` covers the
+     * shares, `lpWithdrawn` covers the pool — so what is still claimable has to
+     * be summed from two independent questions. Gating both on `claimed` would
+     * hide a pool claim the moment the shares were redeemed, and the flags are
+     * irreversible, so the money would simply stay there.
+     */
+    let claimable = s.claimed ? 0n : entitlement;
+    if (lp) {
+      cost += lp.deposited;
+      entitlement += lp.poolValue;
+      if (!lp.withdrawn && !lp.marked) claimable += lp.poolValue;
     }
 
-    const claimable = s.claimed ? 0n : entitlement;
-
     let status: Position["status"];
-    if (s.claimed) status = "Claimed";
+    const fullyClaimed = s.claimed && (!lp || lp.withdrawn);
+    if (fullyClaimed) status = "Claimed";
     else if (m.status === MarketStatus.Void) status = "Refundable";
     else if (m.status === MarketStatus.Settled) {
       status = entitlement > 0n ? "Won" : "Lost";
@@ -108,6 +142,7 @@ export function derivePositions(
       entitlement,
       cost,
       status,
+      ...(lp ? { lp } : {}),
     });
   });
   return out;
@@ -118,7 +153,17 @@ export function derivePositions(
  * traders. With a handful of test wallets this is necessarily sparse; that is a
  * truthful reflection of the chain rather than a gap to be padded.
  */
-export function deriveTraders(markets: Market[], stakes: StakeEvent[]): TraderStats[] {
+export function deriveTraders(
+  markets: Market[],
+  stakes: StakeEvent[],
+  /**
+   * Liquidity movements. Without them a provider who never traded does not
+   * appear on the leaderboard at all, however much they put at risk — and
+   * providing liquidity is the position with the least visible risk of any
+   * here, so leaving it out flatters exactly the wrong people.
+   */
+  lpEvents: LpEvent[] = [],
+): TraderStats[] {
   /**
    * Per market, per trader: the position held and the money that changed
    * hands.
@@ -137,22 +182,42 @@ export function deriveTraders(markets: Market[], stakes: StakeEvent[]): TraderSt
     /** Net collateral put in: buys and stakes less anything sold back. */
     netIn: bigint;
     isAmm: boolean;
+    /** LP shares held in this market, and what they cost. */
+    lpShares: bigint;
+    lpDeposited: bigint;
   };
 
   const byUser = new Map<Address, { staked: bigint; perMarket: Map<string, Book> }>();
 
-  for (const e of stakes) {
-    let rec = byUser.get(e.user);
+  const recFor = (user: Address) => {
+    let rec = byUser.get(user);
     if (!rec) {
       rec = { staked: 0n, perMarket: new Map() };
-      byUser.set(e.user, rec);
+      byUser.set(user, rec);
     }
-
-    let book = rec.perMarket.get(e.marketKey);
+    return rec;
+  };
+  const bookFor = (rec: { perMarket: Map<string, Book> }, key: string, isAmm: boolean) => {
+    let book = rec.perMarket.get(key);
     if (!book) {
-      book = { yes: 0n, no: 0n, netIn: 0n, isAmm: e.amm !== undefined };
-      rec.perMarket.set(e.marketKey, book);
+      book = { yes: 0n, no: 0n, netIn: 0n, isAmm, lpShares: 0n, lpDeposited: 0n };
+      rec.perMarket.set(key, book);
     }
+    return book;
+  };
+
+  for (const e of lpEvents) {
+    if (e.direction !== "add") continue;
+    const rec = recFor(e.provider);
+    const book = bookFor(rec, e.marketKey, true);
+    book.lpShares += e.lpShares;
+    book.lpDeposited += e.amount;
+    rec.staked += e.amount;
+  }
+
+  for (const e of stakes) {
+    const rec = recFor(e.user);
+    const book = bookFor(rec, e.marketKey, e.amm !== undefined);
 
     if (e.amm) {
       const sign = e.amm.direction === "buy" ? 1n : -1n;
@@ -189,10 +254,26 @@ export function deriveTraders(markets: Market[], stakes: StakeEvent[]): TraderSt
       // Profit is redemption value less net cash in — which for an AMM already
       // nets off anything sold back before expiry, so a position closed early
       // scores its realised result rather than nothing.
-      const payout = claimablePayout(m, book.yes, book.no);
-      profit += payout - book.netIn;
+      let payout = claimablePayout(m, book.yes, book.no);
+      let cost = book.netIn;
+
+      // A provider's pool claim is the other half of what they are owed, and
+      // its cost is what they deposited. Both sides have to be added, or
+      // liquidity would score as pure profit or pure loss.
+      if (book.lpShares > 0n && m.categoryId === "amm" && m.totalLpShares > 0n) {
+        const winning =
+          m.status === MarketStatus.Void
+            ? (m.yesReserve + m.noReserve) / 2n
+            : m.outcome === Outcome.Yes
+              ? m.yesReserve
+              : m.noReserve;
+        payout += (winning * book.lpShares) / m.totalLpShares;
+        cost += book.lpDeposited;
+      }
+
+      profit += payout - cost;
       // A void refunds rather than resolving, so it counts as neither win nor loss.
-      if (m.status === MarketStatus.Settled && payout > book.netIn) wins += 1;
+      if (m.status === MarketStatus.Settled && payout > cost) wins += 1;
     }
 
     out.push({ address, staked: rec.staked, settledMarkets, wins, profit });
@@ -205,11 +286,15 @@ export function useChainData(account: Address | null): ChainData {
   const [markets, setMarkets] = useState<Market[]>([]);
   const [stakeEvents, setStakeEvents] = useState<StakeEvent[]>([]);
   const [settledEvents, setSettledEvents] = useState<SettledEvent[]>([]);
+  const [lpEvents, setLpEvents] = useState<LpEvent[]>([]);
   const [positions, setPositions] = useState<Position[]>([]);
   const [balance, setBalance] = useState<bigint>(0n);
   /** Keyed by spender (market contract) — ERC-20 allowance is per spender. */
   const [allowances, setAllowances] = useState<Map<string, bigint>>(new Map());
   const [loading, setLoading] = useState(true);
+  const [failedCategories, setFailedCategories] = useState<
+    { categoryId: string; message: string }[]
+  >([]);
   const [historyDegraded, setHistoryDegraded] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -222,27 +307,30 @@ export function useChainData(account: Address | null): ChainData {
        * tying the two together would blank the whole app over a flaky log
        * query, so events are allowed to fail on their own.
        */
-      const ms = await readMarkets();
+      const { markets: ms, failed } = await readMarkets();
       setMarkets(ms);
+      setFailedCategories(failed);
 
-      const [se, sv, seeds] = await Promise.all([
+      const [se, sv, lp] = await Promise.all([
         readStakeEvents().catch(() => null),
         readSettledEvents().catch(() => null),
-        readAmmSeeds().catch(() => new Map<string, bigint>()),
+        readLpEvents().catch(() => [] as LpEvent[]),
       ]);
       if (se) setStakeEvents(se);
       if (sv) setSettledEvents(sv);
+      setLpEvents(lp);
       setHistoryDegraded(se === null || sv === null);
 
       if (account) {
         // Allowance is per spender, so each market contract needs its own.
         const spenders = [...new Set(ms.map((m) => m.contract))];
-        const [stakes, bal, allows] = await Promise.all([
+        const [stakes, lpStakes, bal, allows] = await Promise.all([
           readWalletStakes(account, ms),
+          readWalletLp(ms, account),
           readTokenBalance(account),
           Promise.all(spenders.map((s) => readAllowance(account, s))),
         ]);
-        setPositions(derivePositions(ms, stakes, se ?? [], account, seeds));
+        setPositions(derivePositions(ms, stakes, se ?? [], account, lp, lpStakes));
         setBalance(bal);
         setAllowances(new Map(spenders.map((s, i) => [s, allows[i]!])));
       } else {
@@ -266,11 +354,13 @@ export function useChainData(account: Address | null): ChainData {
     markets,
     stakeEvents,
     settledEvents,
+    lpEvents,
     positions,
     balance,
     allowances,
     loading,
     error,
+    failedCategories,
     historyDegraded,
     refresh,
   };

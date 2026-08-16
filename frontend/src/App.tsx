@@ -115,6 +115,24 @@ export default function App() {
         </div>
       )}
 
+      {data.failedCategories.length > 0 && (
+        <div
+          style={{
+            padding: "10px var(--page-x)",
+            fontSize: 13,
+            color: "var(--color-negative)",
+            background: "color-mix(in srgb, var(--color-negative) 12%, transparent)",
+          }}
+        >
+          {data.failedCategories.map((f) => (
+            <div key={f.categoryId}>
+              <strong>{f.categoryId}</strong> markets could not be read — they are missing from
+              every list below, not empty. {f.message.split("\n")[0]}
+            </div>
+          ))}
+        </div>
+      )}
+
       {!data.error && data.historyDegraded && (
         <div
           style={{
@@ -163,6 +181,7 @@ export default function App() {
                 markets={data.markets}
                 stakeEvents={data.stakeEvents}
                 settledEvents={data.settledEvents}
+                lpEvents={data.lpEvents}
                 positions={data.positions}
                 wallet={wallet}
                 balance={data.balance}
@@ -189,6 +208,7 @@ export default function App() {
             <Leaderboard
               markets={data.markets}
               stakeEvents={data.stakeEvents}
+              lpEvents={data.lpEvents}
               account={wallet.account}
             />
           )}

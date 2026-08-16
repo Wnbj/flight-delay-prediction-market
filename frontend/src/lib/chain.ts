@@ -29,6 +29,7 @@ import {
 import {
   MarketStatus,
   Outcome,
+  type LpEvent,
   type Market,
   type SettledEvent,
   type StakeEvent,
@@ -315,7 +316,7 @@ async function readAmmMarkets(): Promise<Market[]> {
   const results = await publicClient.multicall({
     contracts: Array.from({ length: n }, (_, i) => i).flatMap((i) => [
       { ...ammContract, functionName: "terms" as const, args: [BigInt(i)] as const },
-      { ...ammContract, functionName: "pool" as const, args: [BigInt(i)] as const },
+      { ...ammContract, functionName: "poolState" as const, args: [BigInt(i)] as const },
       { ...ammContract, functionName: "yesPriceBps" as const, args: [BigInt(i)] as const },
     ]),
     allowFailure: false,
@@ -323,9 +324,31 @@ async function readAmmMarkets(): Promise<Market[]> {
 
   return Array.from({ length: n }, (_, i) => {
     const t = results[i * 3] as unknown as [string, number, bigint, bigint, bigint, bigint];
-    const p = results[i * 3 + 1] as unknown as [
-      number, number, bigint, `0x${string}`, `0x${string}`, bigint, bigint, bigint,
-    ];
+    /**
+     * BY FIELD, not by index. The contract used to return a positional tuple
+     * here, and this decode used to read `p[4]` for the maker — so reshaping
+     * the return value would have silently handed every field to the wrong
+     * name, with no type error and no runtime error anywhere. `poolState`
+     * returns a named struct precisely so that cannot recur; the guard below
+     * catches the one remaining way to be wrong, which is an ABI left stale.
+     */
+    const p = results[i * 3 + 1] as unknown as {
+      status: number;
+      outcome: number;
+      observedValue: bigint;
+      evidenceHash: `0x${string}`;
+      yesReserve: bigint;
+      noReserve: bigint;
+      collateral: bigint;
+      totalLpShares: bigint;
+      feeBps: number;
+      creator: `0x${string}`;
+    };
+    if (typeof p !== "object" || p === null || !("yesReserve" in p)) {
+      throw new Error(
+        "AmmMarket.poolState did not decode to a struct — regenerate src/lib/abi.ts",
+      );
+    }
     const priceBps = Number(results[i * 3 + 2] as unknown as bigint);
 
     return {
@@ -341,34 +364,72 @@ async function readAmmMarkets(): Promise<Market[]> {
       settleAfter: Number(t[5]),
       // AmmMarket has its own Status enum without a Locked state, so the two
       // are mapped rather than cast: its 1 is SettlementRequested, not Locked.
-      status: AMM_STATUS[p[0]] ?? MarketStatus.Open,
-      outcome: Number(p[1]) as Outcome,
-      observedPrice: p[2],
-      evidenceHash: p[3],
-      maker: p[4],
-      yesReserve: p[5],
-      noReserve: p[6],
-      collateral: p[7],
+      status: AMM_STATUS[p.status] ?? MarketStatus.Open,
+      outcome: Number(p.outcome) as Outcome,
+      observedPrice: p.observedValue,
+      evidenceHash: p.evidenceHash,
+      creator: p.creator,
+      yesReserve: p.yesReserve,
+      noReserve: p.noReserve,
+      collateral: p.collateral,
+      totalLpShares: p.totalLpShares,
+      feeBps: Number(p.feeBps),
       yesPriceBps: priceBps,
       // MarketBase's pool fields carry the reserves so shared components have
       // something to render, but nothing may read the ODDS off them — see
       // impliedYesPercent, which special-cases this category for that reason.
-      yesPool: p[5],
-      noPool: p[6],
+      yesPool: p.yesReserve,
+      noPool: p.noReserve,
     } satisfies Market;
   });
 }
 
-/** Every market across every deployed market contract. */
-export async function readMarkets(): Promise<Market[]> {
-  const [flights, crypto, stocks, reserves, amm] = await Promise.all([
-    readFlightMarkets(),
-    readCryptoMarkets(),
-    readFeedMarkets(STOCK_MARKET_ADDRESS, "stocks"),
-    readFeedMarkets(RESERVE_MARKET_ADDRESS, "reserves"),
-    readAmmMarkets(),
-  ]);
-  return [...flights, ...crypto, ...stocks, ...reserves, ...amm];
+/**
+ * Every market across every deployed market contract, plus whichever
+ * categories could not be read.
+ *
+ * Per contract rather than all-or-nothing. These are five INDEPENDENT
+ * deployments, and a redeploy of one necessarily leaves the app talking to an
+ * ABI the old address does not answer to — which is meant to fail loudly, but
+ * for that category alone. Sharing one `Promise.all` meant an AMM upgrade
+ * blanked flights, crypto, stocks and reserves as well.
+ *
+ * Failures are RETURNED, never swallowed: the caller is expected to say which
+ * category is missing and why, because a category silently absent looks
+ * exactly like a category with nothing in it.
+ */
+export async function readMarkets(): Promise<{
+  markets: Market[];
+  failed: { categoryId: string; message: string }[];
+}> {
+  const readers: { categoryId: string; run: () => Promise<Market[]> }[] = [
+    { categoryId: "flights", run: readFlightMarkets },
+    { categoryId: "crypto", run: readCryptoMarkets },
+    { categoryId: "stocks", run: () => readFeedMarkets(STOCK_MARKET_ADDRESS, "stocks") },
+    { categoryId: "reserves", run: () => readFeedMarkets(RESERVE_MARKET_ADDRESS, "reserves") },
+    { categoryId: "amm", run: readAmmMarkets },
+  ];
+
+  const settled = await Promise.all(
+    readers.map(async (r) => {
+      try {
+        return { categoryId: r.categoryId, markets: await r.run(), error: null as string | null };
+      } catch (e) {
+        return {
+          categoryId: r.categoryId,
+          markets: [] as Market[],
+          error: e instanceof Error ? e.message : String(e),
+        };
+      }
+    }),
+  );
+
+  return {
+    markets: settled.flatMap((s) => s.markets),
+    failed: settled
+      .filter((s) => s.error !== null)
+      .map((s) => ({ categoryId: s.categoryId, message: s.error! })),
+  };
 }
 
 export interface WalletStake {
@@ -472,6 +533,48 @@ export async function readWalletStakes(
   return out;
 }
 
+/**
+ * A wallet's liquidity position in every AMM market, keyed by market.
+ *
+ * Read from chain rather than replayed from events for the same reason `buy`
+ * is quoted rather than recomputed: `claimable` comes out of the contract's
+ * own `_lpClaim`, so the number shown is by construction the number paid.
+ * The event replay is still needed, but only for the things the chain does
+ * not remember — what was deposited, and which fees were earned when.
+ */
+export async function readWalletLp(
+  markets: Market[],
+  user: Address,
+): Promise<Map<string, { shares: bigint; totalShares: bigint; withdrawn: boolean; claimable: bigint }>> {
+  const out = new Map<
+    string,
+    { shares: bigint; totalShares: bigint; withdrawn: boolean; claimable: bigint }
+  >();
+  const amm = markets.filter((m) => m.categoryId === "amm");
+  if (amm.length === 0) return out;
+
+  const res = await publicClient.multicall({
+    contracts: amm.map((m) => ({
+      address: m.contract,
+      abi: ammWriteAbi,
+      functionName: "lpPosition" as const,
+      args: [BigInt(m.id), user] as const,
+    })),
+    allowFailure: false,
+  });
+
+  amm.forEach((m, i) => {
+    const [shares, totalShares, withdrawn, claimable] = res[i] as unknown as [
+      bigint,
+      bigint,
+      boolean,
+      bigint,
+    ];
+    if (shares === 0n) return;
+    out.set(m.key, { shares, totalShares, withdrawn, claimable });
+  });
+  return out;
+}
 
 export async function readTokenBalance(user: Address): Promise<bigint> {
   return (await publicClient.readContract({
@@ -500,13 +603,22 @@ const STAKED_EVENT = parseAbiItem(
 // join a pool, and you can sell them back. Reading only Staked left every AMM
 // trade invisible to the leaderboard, the activity feed and the sparkline.
 const BOUGHT_EVENT = parseAbiItem(
-  "event Bought(uint256 indexed marketId, address indexed buyer, bool isYes, uint256 collateralIn, uint256 sharesOut)",
-);
-const MARKET_CREATED_EVENT = parseAbiItem(
-  "event MarketCreated(uint256 indexed marketId, uint8 asset, uint64 strikePrice, uint64 expiryTime, uint256 liquidity)",
+  "event Bought(uint256 indexed marketId, address indexed buyer, bool isYes, uint256 collateralIn, uint256 sharesOut, uint256 fee)",
 );
 const SOLD_EVENT = parseAbiItem(
-  "event Sold(uint256 indexed marketId, address indexed seller, bool isYes, uint256 sharesIn, uint256 collateralOut)",
+  "event Sold(uint256 indexed marketId, address indexed seller, bool isYes, uint256 sharesIn, uint256 collateralOut, uint256 fee)",
+);
+/**
+ * Liquidity, which `MarketCreated` can no longer stand in for: it fires once
+ * per market, names no provider and carries no share total, so with several
+ * providers it says nothing about who is owed what. `newMarket` emits this too,
+ * which is why nothing below has to treat the seed as a special case.
+ */
+const LIQUIDITY_ADDED_EVENT = parseAbiItem(
+  "event LiquidityAdded(uint256 indexed marketId, address indexed provider, uint256 collateralIn, uint256 lpSharesMinted, uint256 totalLpShares, uint256 yesResidual, uint256 noResidual)",
+);
+const LIQUIDITY_WITHDRAWN_EVENT = parseAbiItem(
+  "event LiquidityWithdrawn(uint256 indexed marketId, address indexed provider, uint256 lpShares, uint256 amount)",
 );
 // Both contracts emit Staked identically. Settled differs: the flight contract
 // predates the shared base and still declares int32, the base uses int256.
@@ -584,7 +696,7 @@ export async function readStakeEvents(): Promise<StakeEvent[]> {
         amount: l.args.collateralIn!,
         blockNumber: l.blockNumber!,
         txHash: l.transactionHash!,
-        amm: { direction: "buy" as const, shares: l.args.sharesOut! },
+        amm: { direction: "buy" as const, shares: l.args.sharesOut!, fee: l.args.fee! },
       })),
       ...sold.map((l) => ({
         marketKey: marketKey("amm", Number(l.args.marketId!)),
@@ -594,7 +706,7 @@ export async function readStakeEvents(): Promise<StakeEvent[]> {
         amount: l.args.collateralOut!,
         blockNumber: l.blockNumber!,
         txHash: l.transactionHash!,
-        amm: { direction: "sell" as const, shares: l.args.sharesIn! },
+        amm: { direction: "sell" as const, shares: l.args.sharesIn!, fee: l.args.fee! },
       })),
     ];
   };
@@ -614,31 +726,63 @@ export async function readStakeEvents(): Promise<StakeEvent[]> {
 }
 
 /**
- * What each AMM market was seeded with, by market key.
+ * Every liquidity movement on the AMM, oldest first.
  *
- * Seeding is the maker's purchase — it costs them `liquidity` and gives them a
- * pool plus, when the market opens away from even money, shares of their own.
- * But it emits no Bought event, so a cost basis built from trades alone prices
- * the maker's position at zero and reports it as pure profit.
+ * Providing liquidity emits no Bought event, so a cost basis built from trades
+ * alone prices a provider's position at zero and reports it as pure profit.
+ * That was true of the single maker's seed and is true of every deposit now —
+ * which is why `newMarket` emits `LiquidityAdded` as well, and why nothing
+ * here has to know which one was the seed.
  */
-export async function readAmmSeeds(): Promise<Map<string, bigint>> {
-  const logs = await logsInChunks((fromBlock, toBlock) =>
-    publicClient.getLogs({
-      address: AMM_MARKET_ADDRESS,
-      event: MARKET_CREATED_EVENT,
-      fromBlock,
-      toBlock,
-    }),
-  );
-  return new Map(
-    logs.map((l) => [marketKey("amm", Number(l.args.marketId!)), l.args.liquidity!]),
-  );
+export async function readLpEvents(): Promise<LpEvent[]> {
+  const [added, withdrawn] = await Promise.all([
+    logsInChunks((fromBlock, toBlock) =>
+      publicClient.getLogs({
+        address: AMM_MARKET_ADDRESS,
+        event: LIQUIDITY_ADDED_EVENT,
+        fromBlock,
+        toBlock,
+      }),
+    ),
+    logsInChunks((fromBlock, toBlock) =>
+      publicClient.getLogs({
+        address: AMM_MARKET_ADDRESS,
+        event: LIQUIDITY_WITHDRAWN_EVENT,
+        fromBlock,
+        toBlock,
+      }),
+    ),
+  ]);
+
+  return [
+    ...added.map((l) => ({
+      marketKey: marketKey("amm", Number(l.args.marketId!)),
+      provider: l.args.provider!,
+      direction: "add" as const,
+      amount: l.args.collateralIn!,
+      lpShares: l.args.lpSharesMinted!,
+      totalLpShares: l.args.totalLpShares!,
+      blockNumber: l.blockNumber!,
+      txHash: l.transactionHash!,
+    })),
+    ...withdrawn.map((l) => ({
+      marketKey: marketKey("amm", Number(l.args.marketId!)),
+      provider: l.args.provider!,
+      direction: "withdraw" as const,
+      amount: l.args.amount!,
+      lpShares: l.args.lpShares!,
+      totalLpShares: 0n,
+      blockNumber: l.blockNumber!,
+      txHash: l.transactionHash!,
+    })),
+    // Ordered, because fee attribution depends on who was providing WHEN.
+  ].sort((a, b) => (a.blockNumber === b.blockNumber ? 0 : a.blockNumber < b.blockNumber ? -1 : 1));
 }
 
 export async function readSettledEvents(): Promise<SettledEvent[]> {
   // The stock contract inherits the same base as the crypto one, so it emits
   // the identical int256 Settled event.
-  const [flightLogs, cryptoLogs, stockLogs] = await Promise.all([
+  const [flightLogs, cryptoLogs, stockLogs, ammLogs] = await Promise.all([
     logsInChunks((fromBlock, toBlock) =>
       publicClient.getLogs({
         address: FLIGHT_MARKET_ADDRESS,
@@ -663,6 +807,17 @@ export async function readSettledEvents(): Promise<SettledEvent[]> {
         toBlock,
       }),
     ),
+    // The AMM's Settled is byte-identical to the crypto one — deliberately, so
+    // one workflow handler settles both. It was simply never scanned, which is
+    // why an AMM market has never shown its settlement record on screen.
+    logsInChunks((fromBlock, toBlock) =>
+      publicClient.getLogs({
+        address: AMM_MARKET_ADDRESS,
+        event: CRYPTO_SETTLED_EVENT,
+        fromBlock,
+        toBlock,
+      }),
+    ),
   ]);
 
   return [
@@ -682,6 +837,13 @@ export async function readSettledEvents(): Promise<SettledEvent[]> {
     })),
     ...stockLogs.map((l) => ({
       marketKey: marketKey("stocks", Number(l.args.marketId!)),
+      outcome: Number(l.args.outcome!) as Outcome,
+      observedValue: l.args.observedValue!,
+      evidenceHash: l.args.evidenceHash!,
+      txHash: l.transactionHash!,
+    })),
+    ...ammLogs.map((l) => ({
+      marketKey: marketKey("amm", Number(l.args.marketId!)),
       outcome: Number(l.args.outcome!) as Outcome,
       observedValue: l.args.observedValue!,
       evidenceHash: l.args.evidenceHash!,
@@ -820,7 +982,10 @@ const ammWriteAbi = [
       { name: "isYes", type: "bool" },
       { name: "sharesIn", type: "uint256" },
     ],
-    outputs: [{ name: "", type: "uint256" }],
+    outputs: [
+      { name: "collateralOut", type: "uint256" },
+      { name: "fee", type: "uint256" },
+    ],
     stateMutability: "view",
   },
   {
@@ -838,7 +1003,57 @@ const ammWriteAbi = [
       { name: "isYes", type: "bool" },
       { name: "collateralIn", type: "uint256" },
     ],
+    outputs: [
+      { name: "sharesOut", type: "uint256" },
+      { name: "fee", type: "uint256" },
+    ],
+    stateMutability: "view",
+  },
+  {
+    type: "function",
+    name: "addLiquidity",
+    inputs: [
+      { name: "marketId", type: "uint256" },
+      { name: "amount", type: "uint256" },
+      { name: "minLpSharesOut", type: "uint256" },
+    ],
     outputs: [{ name: "", type: "uint256" }],
+    stateMutability: "nonpayable",
+  },
+  {
+    type: "function",
+    name: "quoteAddLiquidity",
+    inputs: [
+      { name: "marketId", type: "uint256" },
+      { name: "amount", type: "uint256" },
+    ],
+    outputs: [
+      { name: "lpSharesMinted", type: "uint256" },
+      { name: "yesResidual", type: "uint256" },
+      { name: "noResidual", type: "uint256" },
+    ],
+    stateMutability: "view",
+  },
+  {
+    type: "function",
+    name: "withdrawLiquidity",
+    inputs: [{ name: "marketId", type: "uint256" }],
+    outputs: [{ name: "", type: "uint256" }],
+    stateMutability: "nonpayable",
+  },
+  {
+    type: "function",
+    name: "lpPosition",
+    inputs: [
+      { name: "marketId", type: "uint256" },
+      { name: "who", type: "address" },
+    ],
+    outputs: [
+      { name: "shares", type: "uint256" },
+      { name: "totalShares", type: "uint256" },
+      { name: "withdrawn", type: "bool" },
+      { name: "claimable", type: "uint256" },
+    ],
     stateMutability: "view",
   },
   { type: "error", name: "SlippageTooHigh", inputs: [] },
@@ -847,21 +1062,87 @@ const ammWriteAbi = [
   { type: "error", name: "NothingToRedeem", inputs: [] },
   { type: "error", name: "AlreadyRedeemed", inputs: [] },
   { type: "error", name: "NotEnoughShares", inputs: [] },
+  { type: "error", name: "NoLiquidity", inputs: [] },
+  { type: "error", name: "NotAnLp", inputs: [] },
+  { type: "error", name: "AlreadyWithdrawn", inputs: [] },
 ] as const;
 
-/** Shares `collateralIn` buys right now — the exact number `buy` will return. */
+/**
+ * Shares `collateralIn` buys right now, and the fee inside that price — the
+ * exact numbers `buy` will produce, since both run the same contract helper.
+ */
 export async function quoteAmmShares(
   market: Market,
   isYes: boolean,
   collateralIn: bigint,
-): Promise<bigint> {
-  if (market.categoryId !== "amm" || collateralIn <= 0n) return 0n;
-  return (await publicClient.readContract({
+): Promise<{ shares: bigint; fee: bigint }> {
+  if (market.categoryId !== "amm" || collateralIn <= 0n) return { shares: 0n, fee: 0n };
+  const [shares, fee] = (await publicClient.readContract({
     address: market.contract,
     abi: ammWriteAbi,
     functionName: "quote",
     args: [BigInt(market.id), isYes, collateralIn],
-  })) as bigint;
+  })) as [bigint, bigint];
+  return { shares, fee };
+}
+
+/**
+ * What a deposit would mint, and the position it would leave behind.
+ *
+ * The residual is the surprising half of providing liquidity — the pool can
+ * only take a deposit in its own ratio, so whatever it cannot absorb stays
+ * with the depositor as a directional bet. Quoted rather than discovered.
+ */
+export async function quoteAmmAddLiquidity(
+  market: Market,
+  amount: bigint,
+): Promise<{ lpShares: bigint; yesResidual: bigint; noResidual: bigint }> {
+  if (market.categoryId !== "amm" || amount <= 0n) {
+    return { lpShares: 0n, yesResidual: 0n, noResidual: 0n };
+  }
+  const [lpShares, yesResidual, noResidual] = (await publicClient.readContract({
+    address: market.contract,
+    abi: ammWriteAbi,
+    functionName: "quoteAddLiquidity",
+    args: [BigInt(market.id), amount],
+  })) as [bigint, bigint, bigint];
+  return { lpShares, yesResidual, noResidual };
+}
+
+export async function sendAmmAddLiquidity(
+  account: Address,
+  market: Market,
+  amount: bigint,
+  minLpSharesOut: bigint,
+) {
+  const wallet = walletClientFor(account);
+  return wallet.writeContract({
+    address: market.contract,
+    abi: ammWriteAbi,
+    functionName: "addLiquidity",
+    args: [BigInt(market.id), amount, minLpSharesOut] as const,
+    chain,
+    account,
+  });
+}
+
+/**
+ * Draw a provider's slice of the settled pool.
+ *
+ * Separate from `sendAmmRedeem` because they are separate claims with separate
+ * one-shot guards on chain: this one takes the pool, that one takes the shares
+ * the deposit left behind. Firing only one silently strands the other.
+ */
+export async function sendAmmWithdrawLiquidity(account: Address, market: Market) {
+  const wallet = walletClientFor(account);
+  return wallet.writeContract({
+    address: market.contract,
+    abi: ammWriteAbi,
+    functionName: "withdrawLiquidity",
+    args: [BigInt(market.id)] as const,
+    chain,
+    account,
+  });
 }
 
 /**
@@ -894,14 +1175,15 @@ export async function quoteAmmSell(
   market: Market,
   isYes: boolean,
   sharesIn: bigint,
-): Promise<bigint> {
-  if (market.categoryId !== "amm" || sharesIn <= 0n) return 0n;
-  return (await publicClient.readContract({
+): Promise<{ collateral: bigint; fee: bigint }> {
+  if (market.categoryId !== "amm" || sharesIn <= 0n) return { collateral: 0n, fee: 0n };
+  const [collateral, fee] = (await publicClient.readContract({
     address: market.contract,
     abi: ammWriteAbi,
     functionName: "quoteSell",
     args: [BigInt(market.id), isYes, sharesIn],
-  })) as bigint;
+  })) as [bigint, bigint];
+  return { collateral, fee };
 }
 
 /** Sell shares back to the pool — the exit that makes a locked price useful. */

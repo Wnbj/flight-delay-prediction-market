@@ -41,6 +41,31 @@ it was seeded.
 - Nothing is waiting on this. It is a repeat of a path already proven end to
   end on the previous ladder (five rungs, one price, all five consistent).
 
+### Multi-LP is written and green, waiting on a deploy
+
+`AmmMarket` now takes any number of liquidity providers and charges a per-market
+trading fee retained in the pool. Contract, forge suite (71 tests, all green),
+ABI, read paths, LP accounting and UI are all done; **nothing is deployed**.
+
+The blocking order is deliberate:
+
+1. Settle the five open rungs on the old address (below).
+2. Drain it — `withdrawMakerLiquidity(i)` still exists there; the NEW contract
+   calls it `withdrawLiquidity`.
+3. Deploy, then `config.staging.json` + **re-simulate the workflow** so the log
+   trigger's address list contains the new address, then
+   `VITE_AMM_MARKET_ADDRESS`. Leave `VITE_DEPLOY_BLOCK` alone — it is global and
+   raising it erases flight/crypto/stock history.
+
+`WORKFLOW_NAME` must be `flight-settlement-staging`, **not** the
+`amm-settlement-staging` used in the test file. A mismatch fails every
+settlement silently.
+
+Until the new address is live the frontend cannot read AMM markets at all —
+`pool()` was renamed `poolState()` precisely so a stale reader reverts instead
+of decoding the wrong field. `readMarkets` now isolates that per category, so
+the other four still load and a banner names the missing one.
+
 ### CSPX is the last unverified path
 
 `StockMarket` market 0, "Will the S&P 500 (CSPX) be at or above $840 at
@@ -99,9 +124,8 @@ upload was deliberately not attempted. `--secrets-auth browser` looked like the
 free route but failed with *"could not complete the authorization request"*;
 worth retrying from an interactive terminal, possibly after access is granted.
 
-**The AMM has one liquidity provider per market.** Multi-LP means LP tokens,
-proportional withdrawal and impermanent loss — a large surface where mistakes
-are silent. It is the biggest remaining AMM item and wants a fresh session.
+**Multi-LP is now built but not deployed.** See "In flight" above — the
+contract, tests and frontend are done; the new address is not.
 
 **`FlightMarket` still does not inherit `ParimutuelMarket`.** It holds live
 positions and is wired into the frontend by its exact ABI, so migrating means a

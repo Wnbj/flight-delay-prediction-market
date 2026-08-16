@@ -36,7 +36,15 @@ export function Sparkline({
     if (market.categoryId === "amm") {
       for (const e of mine) {
         if (!e.amm || e.amm.shares === 0n) continue;
-        const paidPerShare = Number((e.amount * 10000n) / e.amm.shares) / 100;
+        /**
+         * NET of the fee. Using the gross amount inflates the implied
+         * probability by roughly the fee — and because a NO trade is plotted
+         * as `100 - p`, the two sides would drift in OPPOSITE directions,
+         * making the tape internally inconsistent rather than merely offset.
+         */
+        const net =
+          e.amm.direction === "buy" ? e.amount - e.amm.fee : e.amount + e.amm.fee;
+        const paidPerShare = Number((net * 10000n) / e.amm.shares) / 100;
         // A NO trade at 30c is the same information as YES at 70c.
         series.push(Math.max(0, Math.min(100, e.isYes ? paidPerShare : 100 - paidPerShare)));
       }

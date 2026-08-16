@@ -32,7 +32,7 @@ guessing.
 | **Crypto** | BTC/ETH vs a strike, 5 min to 1 hour | median of Coinbase, Kraken, Bitstamp |
 | **Stocks** | S&P 500 (CSPX), gold, treasury ETFs | Chainlink Data Feeds |
 | **Reserves** | Proof-of-Reserve and fund NAV levels | Chainlink PoR feeds |
-| **AMM** | same crypto questions, priced by a market maker | same as Crypto |
+| **AMM** | same crypto questions, priced by a constant-product pool | same as Crypto |
 
 ---
 
@@ -150,6 +150,16 @@ its own unit. Rounding always favours the pool — and the sell path asserts the
 constant product outright, because getting that rounding backwards drained the
 pool a little on every single trade.
 
+Anyone can provide the liquidity. A deposit scales both reserves by a common
+factor, which is the only way to add depth without moving the price, and hands
+back whatever the pool could not absorb as a real directional position — the
+same thing that happens to whoever opens a market away from even money.
+Providers are paid by a fee that is **kept in the reserves** rather than
+collected anywhere: that single choice makes fee income independent of which
+side wins, and means a late provider mints proportionally fewer shares and so
+cannot claim fees earned before they arrived. Neither property needs any
+bookkeeping to enforce.
+
 ### Strike ladders are derived, not stored
 
 A ladder is N markets sharing an asset and an expiry and differing only in
@@ -167,8 +177,8 @@ export PATH="$HOME/.local/share/cre/bin:$HOME/.bun/bin:$HOME/.foundry/bin:$PATH"
 ```
 
 ```bash
-cd contracts && forge test                     # 140 tests
-cd frontend  && bun install && bun run test    # 101 tests
+cd contracts && forge test                     # 170 tests
+cd frontend  && bun install && bun run test    # 142 tests
 cd frontend  && bun run dev                    # the app, against live Sepolia
 cd cre/settlement && bun test # 35 tests
 ```
@@ -200,9 +210,10 @@ have them.
   **mainnet** contract, so using it costs real gas.
 - **One flight data provider.** The two-source disagreement logic is built and
   tested, but the second slot was only ever exercised with a mock.
-- **The AMM has a single liquidity provider per market**, deliberately —
-  multi-LP means LP tokens, proportional withdrawal and impermanent loss, a
-  large surface where mistakes are silent.
+- **AMM liquidity can only be withdrawn after settlement.** Providers may
+  deposit while a market is open, but there is no remove-while-open: taking
+  liquidity out of a live book is where the silent mistakes are, and the
+  deposit-only direction covers what these markets actually need.
 - **`FlightMarket` predates `ParimutuelMarket`** and does not inherit it. It is
   deployed with live positions, so the parimutuel logic exists in two places
   until it is next redeployed.

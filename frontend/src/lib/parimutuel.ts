@@ -86,6 +86,14 @@ export function estimatePayout(
   amount: bigint,
 ): PayoutEstimate | null {
   if (amount <= 0n) return null;
+  /**
+   * An AMM has no pot to divide and cannot void for a one-sided book — every
+   * share is individually collateralised. Running the parimutuel formula over
+   * its reserves would eventually claim "this market would refund", which is
+   * simply false. The AMM quotes from the contract instead; there is nothing
+   * to estimate here.
+   */
+  if (m.categoryId === "amm") return null;
 
   const yesPool = side === "yes" ? m.yesPool + amount : m.yesPool;
   const noPool = side === "no" ? m.noPool + amount : m.noPool;

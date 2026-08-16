@@ -23,6 +23,7 @@ import {
   priceAssetLabel,
   type Market,
   type Position,
+  type LpEvent,
   type SettledEvent,
   type StakeEvent,
 } from "../lib/types";
@@ -34,6 +35,7 @@ import { LivePrice } from "../components/LivePrice";
 import { PriceChart } from "../components/PriceChart";
 import { MarketCard } from "../components/MarketCard";
 import { TradePanel } from "../components/TradePanel";
+import { LiquidityPanel } from "../components/LiquidityPanel";
 import type { WalletState } from "../hooks/useWallet";
 
 type Tab = "overview" | "activity" | "rules";
@@ -43,6 +45,7 @@ export function Detail({
   markets,
   stakeEvents,
   settledEvents,
+  lpEvents,
   positions,
   wallet,
   balance,
@@ -56,6 +59,7 @@ export function Detail({
   markets: Market[];
   stakeEvents: StakeEvent[];
   settledEvents: SettledEvent[];
+  lpEvents: LpEvent[];
   positions: Position[];
   wallet: WalletState;
   balance: bigint;
@@ -77,10 +81,26 @@ export function Detail({
     [stakeEvents, market.key],
   );
 
-  const traders = useMemo(
-    () => new Set(marketStakes.map((e) => e.user.toLowerCase())).size,
-    [marketStakes],
-  );
+  /**
+   * Traders AND providers. Counting only trade events made anyone who supplied
+   * the liquidity invisible on the market they are underwriting — which, with
+   * one provider per market, meant the counterparty never appeared at all.
+   */
+  const backers = useMemo(() => {
+    const who = new Set(marketStakes.map((e) => e.user.toLowerCase()));
+    for (const e of lpEvents) {
+      if (e.marketKey === market.key && e.direction === "add") who.add(e.provider.toLowerCase());
+    }
+    return who.size;
+  }, [marketStakes, lpEvents, market.key]);
+
+  const providers = useMemo(() => {
+    const who = new Set<string>();
+    for (const e of lpEvents) {
+      if (e.marketKey === market.key && e.direction === "add") who.add(e.provider.toLowerCase());
+    }
+    return who.size;
+  }, [lpEvents, market.key]);
 
   const ladder = useMemo(() => ladderFor(market, markets), [market, markets]);
 
@@ -324,7 +344,13 @@ export function Detail({
                 }}
               >
                 <Stat label="Pool" value={formatToken(totalPool(market))} />
-                <Stat label="Backers" value={String(traders)} />
+                <Stat label="Backers" value={String(backers)} />
+                {market.categoryId === "amm" && (
+                  <Stat
+                    label={providers === 1 ? "Liquidity provider" : "Liquidity providers"}
+                    value={String(providers)}
+                  />
+                )}
                 {market.categoryId !== "flights" && (
                   <Stat label="Strike" value={formatMarketValue(market.categoryId, market.strikePrice)} />
                 )}
@@ -466,15 +492,26 @@ export function Detail({
           )}
         </div>
 
-        <TradePanel
-          market={market}
-          wallet={wallet}
-          balance={balance}
-          allowance={allowances.get(market.contract) ?? 0n}
-          position={position}
-          now={now}
-          onDone={onRefresh}
-        />
+        <div>
+          <TradePanel
+            market={market}
+            wallet={wallet}
+            balance={balance}
+            allowance={allowances.get(market.contract) ?? 0n}
+            position={position}
+            now={now}
+            onDone={onRefresh}
+          />
+          <LiquidityPanel
+            market={market}
+            wallet={wallet}
+            balance={balance}
+            allowance={allowances.get(market.contract) ?? 0n}
+            position={position}
+            now={now}
+            onDone={onRefresh}
+          />
+        </div>
       </div>
 
       {related.length > 0 && (

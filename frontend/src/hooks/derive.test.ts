@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { derivePositions, deriveTraders } from "./useChainData";
-import { MarketStatus, Outcome, type Market, type StakeEvent } from "../lib/types";
+import {
+  MarketStatus,
+  Outcome,
+  type LpEvent,
+  type Market,
+  type StakeEvent,
+} from "../lib/types";
 import { amm0, crypto0, flight0, stock0 } from "../lib/identity.test";
 
 /**
@@ -108,10 +114,36 @@ describe("derivePositions — cost basis", () => {
     collateral: bigint,
     shares: bigint,
     block = 1n,
+    fee = 0n,
   ): StakeEvent => ({
     ...stake(ammMarket.key, alice, true, collateral),
     blockNumber: block,
-    amm: { direction, shares },
+    amm: { direction, shares, fee },
+  });
+
+  /** One deposit, as the chain reports it back through `lpPosition`. */
+  const provided = (
+    shares: bigint,
+    totalShares: bigint,
+    claimable: bigint,
+    withdrawn = false,
+  ) => new Map([[ammMarket.key, { shares, totalShares, withdrawn, claimable }]]);
+
+  const deposit = (
+    provider: `0x${string}`,
+    amount: bigint,
+    lpShares: bigint,
+    totalLpShares: bigint,
+    block = 0n,
+  ): LpEvent => ({
+    marketKey: ammMarket.key,
+    provider,
+    direction: "add",
+    amount,
+    lpShares,
+    totalLpShares,
+    blockNumber: block,
+    txHash: "0x00",
   });
 
   /**
@@ -155,52 +187,134 @@ describe("derivePositions — cost basis", () => {
   });
 
   /**
-   * The maker's position has no trade behind it. Seeding is their purchase —
-   * it costs `liquidity` and, when the market opens away from even money,
-   * hands them shares of their own — but emits no Bought event. Pricing that
-   * from trades alone reported it as pure profit out of nothing.
+   * A provider's position has no trade behind it. Depositing is their purchase
+   * — it costs collateral and, when the pool is skewed, hands them shares of
+   * their own — but emits no Bought event. Pricing that from trades alone
+   * reported it as pure profit out of nothing.
    */
-  it("charges the maker what they seeded, even with no trades at all", () => {
-    const m = { ...ammMarket, maker: alice } as Market;
-    const seeds = new Map([[m.key, 40_000_000n]]);
-    // Opened at 85%, so the maker kept YES and the pool took the rest.
-    const [p] = derivePositions([m], held(32_941_177n, 0n), [], alice, seeds);
+  it("charges a provider what they deposited, even with no trades at all", () => {
+    const lpEvents = [deposit(alice, 40_000_000n, 40_000_000n, 40_000_000n)];
+    // Opened at 85%, so the provider kept YES and the pool took the rest.
+    const [p] = derivePositions(
+      [ammMarket],
+      held(32_941_177n, 0n),
+      [],
+      alice,
+      lpEvents,
+      provided(40_000_000n, 40_000_000n, 7_058_823n),
+    );
 
     expect(p!.cost).toBe(40_000_000n);
   });
 
-  it("adds the seed on top of the maker's own later trades", () => {
-    const m = { ...ammMarket, maker: alice } as Market;
-    const seeds = new Map([[m.key, 40_000_000n]]);
+  it("adds the deposit on top of the provider's own later trades", () => {
+    const lpEvents = [deposit(alice, 40_000_000n, 40_000_000n, 40_000_000n)];
     const trades = [trade("buy", 10_000_000n, 19_090_909n)];
-    const [p] = derivePositions([m], held(52_032_086n, 0n), trades, alice, seeds);
+    const [p] = derivePositions(
+      [ammMarket],
+      held(52_032_086n, 0n),
+      trades,
+      alice,
+      lpEvents,
+      provided(40_000_000n, 40_000_000n, 7_058_823n),
+    );
 
     expect(p!.cost).toBe(50_000_000n);
   });
 
   /**
-   * The maker is owed the pool's remaining winning side as well as their own
-   * shares — counting only the shares would show them down by the whole pool.
+   * A provider is owed their slice of the pool's remaining winning side as
+   * well as their own shares — counting only the shares would show them down
+   * by the whole pool.
    */
-  it("counts the pool's winning reserve towards the maker's entitlement", () => {
-    const m = { ...ammMarket, maker: alice, yesReserve: 7_058_823n } as Market;
-    const seeds = new Map([[m.key, 40_000_000n]]);
-    const [p] = derivePositions([m], held(32_941_177n, 0n), [], alice, seeds);
+  it("counts the pool claim towards a provider's entitlement", () => {
+    const lpEvents = [deposit(alice, 40_000_000n, 40_000_000n, 40_000_000n)];
+    const [p] = derivePositions(
+      [ammMarket],
+      held(32_941_177n, 0n),
+      [],
+      alice,
+      lpEvents,
+      provided(40_000_000n, 40_000_000n, 7_058_823n),
+    );
 
     // 32.941177 kept + 7.058823 still in the pool = the whole 40 minted.
     expect(p!.entitlement).toBe(40_000_000n);
     expect(p!.entitlement - p!.cost).toBe(0n);
   });
 
-  /** Somebody who merely traded is not the maker and owes nothing for a seed. */
-  it("does not charge a plain trader for the maker's seed", () => {
-    const m = { ...ammMarket, maker: bob } as Market;
-    const seeds = new Map([[m.key, 40_000_000n]]);
+  /**
+   * Two providers split the pool by shares, not evenly. The claim comes from
+   * the chain's own `lpPosition`, so this is really asserting that the value
+   * is carried through rather than recomputed here.
+   */
+  it("gives each provider their pro-rata slice", () => {
+    const lpEvents = [
+      deposit(bob, 40_000_000n, 40_000_000n, 40_000_000n),
+      deposit(alice, 20_000_000n, 20_000_000n, 60_000_000n, 1n),
+    ];
+    const [p] = derivePositions(
+      [ammMarket],
+      held(0n, 0n),
+      [],
+      alice,
+      lpEvents,
+      provided(20_000_000n, 60_000_000n, 3_000_000n),
+    );
+
+    expect(p!.cost).toBe(20_000_000n);
+    expect(p!.entitlement).toBe(3_000_000n);
+  });
+
+  /**
+   * A provider in a pool at even money holds NO residual shares — the reserves
+   * take the whole deposit. Skipping positions on shares alone made their
+   * entire stake vanish from the portfolio.
+   */
+  it("keeps a provider with no residual shares at all", () => {
+    const lpEvents = [deposit(alice, 40_000_000n, 40_000_000n, 40_000_000n)];
+    const [p] = derivePositions(
+      [ammMarket],
+      held(0n, 0n),
+      [],
+      alice,
+      lpEvents,
+      provided(40_000_000n, 40_000_000n, 40_000_000n),
+    );
+
+    expect(p).toBeDefined();
+    expect(p!.cost).toBe(40_000_000n);
+    expect(p!.lp?.shares).toBe(40_000_000n);
+  });
+
+  /**
+   * Redeeming shares and withdrawing from the pool are separate calls with
+   * separate one-shot guards, so one being done must not hide the other.
+   */
+  it("still offers the pool claim after the shares have been redeemed", () => {
+    const lpEvents = [deposit(alice, 40_000_000n, 40_000_000n, 40_000_000n)];
+    const [p] = derivePositions(
+      [ammMarket],
+      held(32_941_177n, 0n, true),
+      [],
+      alice,
+      lpEvents,
+      provided(40_000_000n, 40_000_000n, 7_058_823n),
+    );
+
+    expect(p!.claimable).toBe(7_058_823n);
+    expect(p!.status).not.toBe("Claimed");
+  });
+
+  /** Somebody who merely traded owes nothing for anyone else's deposit. */
+  it("does not charge a plain trader for someone else's liquidity", () => {
+    const lpEvents = [deposit(bob, 40_000_000n, 40_000_000n, 40_000_000n)];
     const trades = [trade("buy", 3_000_000n, 5_000_000n)];
-    const [p] = derivePositions([m], held(5_000_000n, 0n), trades, alice, seeds);
+    const [p] = derivePositions([ammMarket], held(5_000_000n, 0n), trades, alice, lpEvents);
 
     expect(p!.cost).toBe(3_000_000n);
     expect(p!.entitlement).toBe(5_000_000n);
+    expect(p!.lp).toBeUndefined();
   });
 
   it("reports zero cost when the trade history could not be loaded", () => {
@@ -275,7 +389,7 @@ describe("deriveTraders", () => {
     const m = { ...amm0, status: MarketStatus.Settled, outcome: Outcome.Yes } as Market;
     const buy: StakeEvent = {
       ...stake(m.key, alice, true, 3_000_000n),
-      amm: { direction: "buy", shares: 5_307_692n },
+      amm: { direction: "buy", shares: 5_307_692n, fee: 0n },
     };
 
     const [t] = deriveTraders([m], [buy]);
@@ -288,7 +402,7 @@ describe("deriveTraders", () => {
     const m = { ...amm0, status: MarketStatus.Settled, outcome: Outcome.No } as Market;
     const buy: StakeEvent = {
       ...stake(m.key, alice, true, 3_000_000n),
-      amm: { direction: "buy", shares: 5_307_692n },
+      amm: { direction: "buy", shares: 5_307_692n, fee: 0n },
     };
     expect(deriveTraders([m], [buy])[0]!.profit).toBe(-3_000_000n);
   });
@@ -302,11 +416,11 @@ describe("deriveTraders", () => {
   it("nets an AMM sale off the money put in", () => {
     const m = { ...amm0, status: MarketStatus.Settled, outcome: Outcome.No } as Market;
     const events: StakeEvent[] = [
-      { ...stake(m.key, alice, true, 3_000_000n), amm: { direction: "buy", shares: 5_000_000n } },
+      { ...stake(m.key, alice, true, 3_000_000n), amm: { direction: "buy", shares: 5_000_000n, fee: 0n } },
       {
         ...stake(m.key, alice, true, 4_000_000n),
         blockNumber: 2n,
-        amm: { direction: "sell", shares: 5_000_000n },
+        amm: { direction: "sell", shares: 5_000_000n, fee: 0n },
       },
     ];
 
@@ -320,11 +434,11 @@ describe("deriveTraders", () => {
   it("leaves no position behind after a full round trip", () => {
     const m = { ...amm0, status: MarketStatus.Settled, outcome: Outcome.Yes } as Market;
     const events: StakeEvent[] = [
-      { ...stake(m.key, alice, true, 3_000_000n), amm: { direction: "buy", shares: 5_000_000n } },
+      { ...stake(m.key, alice, true, 3_000_000n), amm: { direction: "buy", shares: 5_000_000n, fee: 0n } },
       {
         ...stake(m.key, alice, true, 2_900_000n),
         blockNumber: 2n,
-        amm: { direction: "sell", shares: 5_000_000n },
+        amm: { direction: "sell", shares: 5_000_000n, fee: 0n },
       },
     ];
     // Sold everything at a small loss; winning outcome pays nothing extra.
@@ -335,11 +449,11 @@ describe("deriveTraders", () => {
   it("handles selling only part of a position", () => {
     const m = { ...amm0, status: MarketStatus.Settled, outcome: Outcome.Yes } as Market;
     const events: StakeEvent[] = [
-      { ...stake(m.key, alice, true, 4_000_000n), amm: { direction: "buy", shares: 6_000_000n } },
+      { ...stake(m.key, alice, true, 4_000_000n), amm: { direction: "buy", shares: 6_000_000n, fee: 0n } },
       {
         ...stake(m.key, alice, true, 1_500_000n),
         blockNumber: 2n,
-        amm: { direction: "sell", shares: 2_000_000n },
+        amm: { direction: "sell", shares: 2_000_000n, fee: 0n },
       },
     ];
     // In 4, back 1.5, 4m shares left paying 1 each.
@@ -350,7 +464,7 @@ describe("deriveTraders", () => {
     const ammM = { ...amm0, status: MarketStatus.Settled, outcome: Outcome.Yes } as Market;
     const pariM = resolved(flight0, Outcome.No, 1_000_000n, 1_000_000n);
     const events: StakeEvent[] = [
-      { ...stake(ammM.key, alice, true, 1_000_000n), amm: { direction: "buy", shares: 2_000_000n } },
+      { ...stake(ammM.key, alice, true, 1_000_000n), amm: { direction: "buy", shares: 2_000_000n, fee: 0n } },
       stake(pariM.key, alice, true, 1_000_000n),
     ];
 
@@ -367,5 +481,76 @@ describe("deriveTraders", () => {
       [stake(m.key, alice, true, 1_000_000n), stake(m.key, bob, false, 3_000_000n)],
     );
     expect(traders[0]!.address).toBe(alice);
+  });
+});
+
+describe("deriveTraders — liquidity providers", () => {
+  const settled = {
+    ...amm0,
+    status: MarketStatus.Settled,
+    outcome: Outcome.Yes,
+    yesReserve: 7_058_823n,
+    totalLpShares: 40_000_000n,
+  } as Market;
+
+  const provide = (
+    provider: `0x${string}`,
+    amount: bigint,
+    lpShares: bigint,
+    totalLpShares: bigint,
+  ): LpEvent => ({
+    marketKey: settled.key,
+    provider,
+    direction: "add",
+    amount,
+    lpShares,
+    totalLpShares,
+    blockNumber: 1n,
+    txHash: "0x00",
+  });
+
+  /**
+   * A provider who never traded emits no Bought event, so a leaderboard built
+   * from trades alone left them off entirely — however much they had at risk.
+   * Underwriting the market is the position with the least visible risk here,
+   * which makes omitting it flatter exactly the wrong people.
+   */
+  it("shows a provider who never traded", () => {
+    const traders = deriveTraders(
+      [settled],
+      [],
+      [provide(alice, 40_000_000n, 40_000_000n, 40_000_000n)],
+    );
+
+    expect(traders).toHaveLength(1);
+    expect(traders[0]!.address).toBe(alice);
+    expect(traders[0]!.staked).toBe(40_000_000n);
+  });
+
+  /** Their result is the pool claim against what they deposited. */
+  it("scores the pool claim against the deposit", () => {
+    const traders = deriveTraders(
+      [settled],
+      [],
+      [provide(alice, 40_000_000n, 40_000_000n, 40_000_000n)],
+    );
+
+    // The pool kept 7.058823 of the winning side against a 40 deposit.
+    expect(traders[0]!.profit).toBe(7_058_823n - 40_000_000n);
+  });
+
+  it("splits the claim between two providers by shares", () => {
+    const traders = deriveTraders(
+      [settled],
+      [],
+      [
+        provide(alice, 20_000_000n, 20_000_000n, 20_000_000n),
+        provide(bob, 20_000_000n, 20_000_000n, 40_000_000n),
+      ],
+    );
+
+    const a = traders.find((t) => t.address === alice)!;
+    const b = traders.find((t) => t.address === bob)!;
+    expect(a.profit).toBe(b.profit);
   });
 });

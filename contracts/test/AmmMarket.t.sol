@@ -14,6 +14,8 @@ contract AmmMarketTest is Test {
     address internal maker = address(0x4A4E);
     address internal alice = address(0xA11CE);
     address internal bob = address(0xB0B);
+    /// A second liquidity provider, so multi-LP paths have someone to be.
+    address internal carol = address(0xCA401);
 
     string internal constant WF_NAME_STR = "amm-settlement-staging";
     address internal wfAuthor;
@@ -38,8 +40,8 @@ contract AmmMarketTest is Test {
         closeTime = uint64(block.timestamp + 1 hours);
         expiryTime = uint64(block.timestamp + 2 hours);
 
-        for (uint256 i = 0; i < 3; i++) {
-            address who = [maker, alice, bob][i];
+        for (uint256 i = 0; i < 4; i++) {
+            address who = [maker, alice, bob, carol][i];
             token.mint(who, 100_000e6);
             vm.prank(who);
             token.approve(address(market), type(uint256).max);
@@ -52,7 +54,16 @@ contract AmmMarketTest is Test {
         return _newMarketAt(5_000);
     }
 
+    /**
+     * Zero fee by default, deliberately: the arithmetic assertions throughout
+     * this file are exact, and a default fee would quietly turn every one of
+     * them into an approximation. Fee behaviour is tested by asking for it.
+     */
     function _newMarketAt(uint256 openingBps) internal returns (uint256 id) {
+        return _newMarketWithFee(openingBps, 0);
+    }
+
+    function _newMarketWithFee(uint256 openingBps, uint16 feeBps) internal returns (uint256 id) {
         vm.prank(maker);
         id = market.newMarket(
             "Will BTC be at or above $63,000?",
@@ -61,8 +72,14 @@ contract AmmMarketTest is Test {
             closeTime,
             expiryTime,
             LIQUIDITY,
-            openingBps
+            openingBps,
+            feeBps
         );
+    }
+
+    function _addLiquidity(uint256 id, address who, uint256 amount) internal returns (uint256) {
+        vm.prank(who);
+        return market.addLiquidity(id, amount, 0);
     }
 
     function _buy(uint256 id, address who, bool isYes, uint256 amount) internal returns (uint256) {
@@ -84,12 +101,18 @@ contract AmmMarketTest is Test {
         );
     }
 
+    /**
+     * Reads BY FIELD, not by position. The old positional destructure would
+     * still have compiled against a reshaped tuple and silently read three
+     * different numbers, which is exactly why the contract returns a struct.
+     */
     function _pool(uint256 id)
         internal
         view
         returns (uint256 yesReserve, uint256 noReserve, uint256 collateral)
     {
-        (,,,,, yesReserve, noReserve, collateral) = market.pool(id);
+        AmmMarket.PoolView memory p = market.poolState(id);
+        return (p.yesReserve, p.noReserve, p.collateral);
     }
 
     /**
@@ -110,13 +133,24 @@ contract AmmMarketTest is Test {
         assertEq(yesHeld, collateral, "YES shares not fully collateralised");
         assertEq(noHeld, collateral, "NO shares not fully collateralised");
         assertGe(token.balanceOf(address(market)), collateral, "contract holds less than it owes");
+
+        // An invariant of equal standing: the denominator every provider's
+        // claim divides by must be exactly the shares actually issued. If it
+        // drifts high, the last provider is short-changed; if it drifts low,
+        // the pool pays out more than it holds.
+        uint256 lpTotal;
+        for (uint256 i = 0; i < holders.length; i++) {
+            lpTotal += market.lpShares(id, holders[i]);
+        }
+        assertEq(lpTotal, market.poolState(id).totalLpShares, "LP shares do not sum to the total");
     }
 
     function _holders() internal view returns (address[] memory h) {
-        h = new address[](3);
+        h = new address[](4);
         h[0] = maker;
         h[1] = alice;
         h[2] = bob;
+        h[3] = carol;
     }
 
     // --- the property that distinguishes this from parimutuel ---------------
@@ -165,13 +199,13 @@ contract AmmMarketTest is Test {
 
     function test_quoteMatchesWhatBuyActuallyGives() public {
         uint256 id = _newMarket();
-        uint256 quoted = market.quote(id, true, 123e6);
+        (uint256 quoted,) = market.quote(id, true, 123e6);
         assertEq(_buy(id, alice, true, 123e6), quoted);
     }
 
     function test_buy_respectsSlippageBound() public {
         uint256 id = _newMarket();
-        uint256 quoted = market.quote(id, true, 100e6);
+        (uint256 quoted,) = market.quote(id, true, 100e6);
 
         vm.prank(alice);
         vm.expectRevert(AmmMarket.SlippageTooHigh.selector);
@@ -209,7 +243,7 @@ contract AmmMarketTest is Test {
         vm.prank(alice);
         market.redeem(id);
         vm.prank(maker);
-        market.withdrawMakerLiquidity(id);
+        market.withdrawLiquidity(id);
 
         // Bob held only the losing side.
         vm.prank(bob);
@@ -242,7 +276,7 @@ contract AmmMarketTest is Test {
         vm.prank(bob);
         market.redeem(id);
         vm.prank(maker);
-        market.withdrawMakerLiquidity(id);
+        market.withdrawLiquidity(id);
 
         assertEq(token.balanceOf(alice) - aliceBefore, aliceShares / 2);
         assertEq(token.balanceOf(bob) - bobBefore, bobShares / 2);
@@ -280,7 +314,7 @@ contract AmmMarketTest is Test {
         uint256 makerBefore = token.balanceOf(maker);
         _settle(id, AmmMarket.Outcome.Yes);
         vm.prank(maker);
-        market.withdrawMakerLiquidity(id);
+        market.withdrawLiquidity(id);
 
         uint256 recovered = token.balanceOf(maker) - makerBefore;
         assertLt(recovered, LIQUIDITY, "maker should be down when traders are right");
@@ -294,7 +328,7 @@ contract AmmMarketTest is Test {
         uint256 makerBefore = token.balanceOf(maker);
         _settle(id, AmmMarket.Outcome.No);
         vm.prank(maker);
-        market.withdrawMakerLiquidity(id);
+        market.withdrawLiquidity(id);
 
         assertGt(token.balanceOf(maker) - makerBefore, LIQUIDITY, "maker keeps the losing bet");
     }
@@ -309,7 +343,7 @@ contract AmmMarketTest is Test {
 
         _settle(id, AmmMarket.Outcome.Yes);
         vm.prank(maker);
-        market.withdrawMakerLiquidity(id);
+        market.withdrawLiquidity(id);
 
         assertEq(token.balanceOf(maker) - makerBefore, LIQUIDITY);
         assertEq(token.balanceOf(address(market)), 0);
@@ -372,7 +406,7 @@ contract AmmMarketTest is Test {
             vm.prank(maker);
             vm.expectRevert(AmmMarket.BadOpeningPrice.selector);
             market.newMarket(
-                "bad", AmmMarket.Asset.BTC, STRIKE, closeTime, expiryTime, LIQUIDITY, bad
+                "bad", AmmMarket.Asset.BTC, STRIKE, closeTime, expiryTime, LIQUIDITY, bad, 0
             );
         }
     }
@@ -404,7 +438,7 @@ contract AmmMarketTest is Test {
         (uint256 yesReserve,,) = _pool(id);
         if (yesReserve > 0) {
             vm.prank(maker);
-            market.withdrawMakerLiquidity(id);
+            market.withdrawLiquidity(id);
         }
         assertLe(token.balanceOf(address(market)), 3, "left more than rounding dust");
     }
@@ -471,7 +505,7 @@ contract AmmMarketTest is Test {
         uint256 id = _newMarket();
         uint256 shares = _buy(id, alice, true, 250e6);
 
-        uint256 quoted = market.quoteSell(id, true, shares);
+        (uint256 quoted,) = market.quoteSell(id, true, shares);
         vm.prank(alice);
         assertEq(market.sell(id, true, shares, 0), quoted);
     }
@@ -479,7 +513,7 @@ contract AmmMarketTest is Test {
     function test_sell_respectsSlippageBound() public {
         uint256 id = _newMarket();
         uint256 shares = _buy(id, alice, true, 100e6);
-        uint256 quoted = market.quoteSell(id, true, shares);
+        (uint256 quoted,) = market.quoteSell(id, true, shares);
 
         vm.prank(alice);
         vm.expectRevert(AmmMarket.SlippageTooHigh.selector);
@@ -543,19 +577,21 @@ contract AmmMarketTest is Test {
     function test_newMarket_rejectsZeroLiquidity() public {
         vm.prank(maker);
         vm.expectRevert(AmmMarket.NoLiquidity.selector);
-        market.newMarket("bad", AmmMarket.Asset.BTC, STRIKE, closeTime, expiryTime, 0, 5_000);
+        market.newMarket("bad", AmmMarket.Asset.BTC, STRIKE, closeTime, expiryTime, 0, 5_000, 0);
     }
 
     function test_newMarket_rejectsZeroStrike() public {
         vm.prank(maker);
         vm.expectRevert(AmmMarket.BadStrike.selector);
-        market.newMarket("bad", AmmMarket.Asset.BTC, 0, closeTime, expiryTime, LIQUIDITY, 5_000);
+        market.newMarket("bad", AmmMarket.Asset.BTC, 0, closeTime, expiryTime, LIQUIDITY, 5_000, 0);
     }
 
     function test_newMarket_rejectsCloseAfterExpiry() public {
         vm.prank(maker);
         vm.expectRevert(AmmMarket.BadExpiry.selector);
-        market.newMarket("bad", AmmMarket.Asset.BTC, STRIKE, expiryTime + 1, expiryTime, LIQUIDITY, 5_000);
+        market.newMarket(
+            "bad", AmmMarket.Asset.BTC, STRIKE, expiryTime + 1, expiryTime, LIQUIDITY, 5_000, 0
+        );
     }
 
     function test_redeem_rejectsSecondAttempt() public {
@@ -570,12 +606,32 @@ contract AmmMarketTest is Test {
         market.redeem(id);
     }
 
-    function test_makerWithdraw_onlyByMaker() public {
+    /// Holding shares is not the same as having provided liquidity.
+    function test_withdraw_rejectedForNonProvider() public {
         uint256 id = _newMarket();
+        _buy(id, alice, true, 100e6);
         _settle(id, AmmMarket.Outcome.Yes);
         vm.prank(alice);
+        vm.expectRevert(AmmMarket.NotAnLp.selector);
+        market.withdrawLiquidity(id);
+    }
+
+    function test_withdraw_rejectsSecondAttempt() public {
+        uint256 id = _newMarketAt(7_000);
+        _settle(id, AmmMarket.Outcome.Yes);
+
+        vm.prank(maker);
+        market.withdrawLiquidity(id);
+        vm.prank(maker);
+        vm.expectRevert(AmmMarket.AlreadyWithdrawn.selector);
+        market.withdrawLiquidity(id);
+    }
+
+    function test_withdraw_rejectedWhileOpen() public {
+        uint256 id = _newMarket();
+        vm.prank(maker);
         vm.expectRevert(AmmMarket.BadStatus.selector);
-        market.withdrawMakerLiquidity(id);
+        market.withdrawLiquidity(id);
     }
 
     function test_settle_rejectsWrongAuthor() public {
@@ -596,6 +652,335 @@ contract AmmMarketTest is Test {
         vm.warp(expiryTime + market.SETTLEMENT_DELAY() - 1);
         vm.expectRevert(AmmMarket.TooEarly.selector);
         market.requestSettlement(id);
+    }
+
+    // --- multiple liquidity providers ---------------------------------------
+
+    /**
+     * The defining property of adding liquidity: depth goes up, price does not
+     * move. If it moved, a deposit would be a trade against everyone already
+     * holding — which is what scaling both reserves by a common factor avoids.
+     */
+    function test_addLiquidity_doesNotMoveThePrice() public {
+        uint256[5] memory openings = [uint256(1_200), 2_500, 5_000, 7_000, 8_500];
+        for (uint256 i = 0; i < openings.length; i++) {
+            uint256 id = _newMarketAt(openings[i]);
+            uint256 before = market.yesPriceBps(id);
+
+            _addLiquidity(id, carol, 500e6);
+
+            assertApproxEqAbs(market.yesPriceBps(id), before, 1, "deposit moved the price");
+        }
+    }
+
+    /// Even after the book has been pushed around, a deposit is still neutral.
+    function test_addLiquidity_doesNotMoveThePriceAfterTrading() public {
+        uint256 id = _newMarket();
+        _buy(id, alice, true, 300e6);
+        uint256 before = market.yesPriceBps(id);
+
+        _addLiquidity(id, carol, 750e6);
+
+        assertApproxEqAbs(market.yesPriceBps(id), before, 1, "deposit moved the price");
+    }
+
+    /**
+     * The surprising half of providing liquidity here. The pool can only take
+     * the deposit in its own ratio, so what it cannot absorb stays with the
+     * depositor as a real directional position — the same thing that happens
+     * to a creator who opens away from even money.
+     */
+    function test_addLiquidity_handsTheDepositorTheResidualPosition() public {
+        uint256 id = _newMarketAt(8_500);
+        _addLiquidity(id, carol, 500e6);
+
+        // Bullish book: the pool is short YES, so the depositor keeps YES.
+        assertGt(market.yesShares(id, carol), 0, "no residual YES position");
+        assertEq(market.noShares(id, carol), 0, "should not hold the deep side");
+        _assertFullyCollateralised(id, _holders());
+    }
+
+    function test_addLiquidity_quoteMatchesWhatDepositingGives() public {
+        uint256 id = _newMarketAt(7_000);
+        (uint256 quotedShares, uint256 quotedYes, uint256 quotedNo) =
+            market.quoteAddLiquidity(id, 400e6);
+
+        uint256 minted = _addLiquidity(id, carol, 400e6);
+
+        assertEq(minted, quotedShares, "quoted LP shares differ from minted");
+        assertEq(market.yesShares(id, carol), quotedYes, "quoted YES residual differs");
+        assertEq(market.noShares(id, carol), quotedNo, "quoted NO residual differs");
+    }
+
+    /// Depositing what the market was seeded with buys half of it.
+    function test_addLiquidity_mintsProportionalLpShares() public {
+        uint256 id = _newMarket();
+        uint256 minted = _addLiquidity(id, carol, LIQUIDITY);
+
+        AmmMarket.PoolView memory p = market.poolState(id);
+        assertApproxEqAbs(minted, p.totalLpShares / 2, 1, "equal money should buy half the pool");
+        assertEq(market.lpShares(id, maker), LIQUIDITY, "the creator's stake changed");
+    }
+
+    function test_addLiquidity_respectsMinLpSharesOut() public {
+        uint256 id = _newMarket();
+        (uint256 quoted,,) = market.quoteAddLiquidity(id, 100e6);
+
+        vm.prank(carol);
+        vm.expectRevert(AmmMarket.SlippageTooHigh.selector);
+        market.addLiquidity(id, 100e6, quoted + 1);
+    }
+
+    /**
+     * A deposit too small for the pool's skew would land on one side only,
+     * moving the price — and it is the same condition that mints nothing, so
+     * one revert covers both.
+     */
+    function test_addLiquidity_rejectsDustThatWouldMintZeroShares() public {
+        uint256 id = _newMarketAt(9_900);
+        vm.prank(carol);
+        vm.expectRevert(AmmMarket.NoLiquidity.selector);
+        market.addLiquidity(id, 1, 0);
+    }
+
+    function test_addLiquidity_rejectsZeroAmount() public {
+        uint256 id = _newMarket();
+        vm.prank(carol);
+        vm.expectRevert(AmmMarket.NoLiquidity.selector);
+        market.addLiquidity(id, 0, 0);
+    }
+
+    function test_addLiquidity_rejectedAfterTradingCloses() public {
+        uint256 id = _newMarket();
+        vm.warp(closeTime);
+        vm.prank(carol);
+        vm.expectRevert(AmmMarket.TooLate.selector);
+        market.addLiquidity(id, 100e6, 0);
+    }
+
+    function test_addLiquidity_rejectedOnceSettled() public {
+        uint256 id = _newMarket();
+        _settle(id, AmmMarket.Outcome.Yes);
+        vm.prank(carol);
+        vm.expectRevert(AmmMarket.BadStatus.selector);
+        market.addLiquidity(id, 100e6, 0);
+    }
+
+    /// Two providers, 2:1 money in, 2:1 out — and never more than the pool holds.
+    function test_twoLpsSplitTheWinningReserveProRata() public {
+        uint256 id = _newMarket();
+        _addLiquidity(id, carol, LIQUIDITY / 2);
+        _buy(id, alice, true, 200e6);
+        _settle(id, AmmMarket.Outcome.No);
+
+        (, uint256 noReserve,) = _pool(id);
+
+        vm.prank(maker);
+        uint256 makerOut = market.withdrawLiquidity(id);
+        vm.prank(carol);
+        uint256 carolOut = market.withdrawLiquidity(id);
+
+        assertApproxEqAbs(makerOut, carolOut * 2, 2, "claims are not 2:1");
+        assertLe(makerOut + carolOut, noReserve, "providers drew more than the pool held");
+    }
+
+    /**
+     * A provider has two claims and two guards, and neither consumes the other.
+     * Getting this wrong leaves money on chain permanently, since both flags
+     * are irreversible.
+     */
+    function test_lpRedeemsResidualSharesSeparatelyFromTheirPoolClaim() public {
+        uint256 id = _newMarketAt(8_500);
+        _addLiquidity(id, carol, 500e6);
+        _settle(id, AmmMarket.Outcome.Yes);
+
+        uint256 before = token.balanceOf(carol);
+
+        vm.prank(carol);
+        uint256 poolClaim = market.withdrawLiquidity(id);
+        vm.prank(carol);
+        market.redeem(id);
+
+        uint256 received = token.balanceOf(carol) - before;
+        assertGt(poolClaim, 0, "pool claim was empty");
+        assertGt(received, poolClaim, "redeeming the residual added nothing");
+    }
+
+    function test_lpPositionViewMatchesWhatWithdrawPays() public {
+        uint256 id = _newMarketAt(3_000);
+        _addLiquidity(id, carol, 400e6);
+        _buy(id, alice, false, 150e6);
+        _settle(id, AmmMarket.Outcome.No);
+
+        (uint256 shares, uint256 total, bool withdrawn, uint256 claimable) =
+            market.lpPosition(id, carol);
+        assertGt(shares, 0);
+        assertEq(total, market.poolState(id).totalLpShares);
+        assertFalse(withdrawn);
+
+        vm.prank(carol);
+        assertEq(market.withdrawLiquidity(id), claimable, "view disagreed with the payout");
+        (,, bool after_,) = market.lpPosition(id, carol);
+        assertTrue(after_, "withdrawal not reflected");
+    }
+
+    /// The creator is the first provider and nothing more.
+    function test_creatorHasNoSpecialPowers() public {
+        uint256 id = _newMarket();
+        _addLiquidity(id, carol, 300e6);
+        _settle(id, AmmMarket.Outcome.Yes);
+
+        // The creator cannot reach anyone else's stake; they draw their own.
+        vm.prank(maker);
+        uint256 makerOut = market.withdrawLiquidity(id);
+        vm.prank(carol);
+        uint256 carolOut = market.withdrawLiquidity(id);
+
+        assertGt(carolOut, 0, "a non-creator provider could not withdraw");
+        (uint256 yesReserve,,) = _pool(id);
+        assertLe(makerOut + carolOut, yesReserve, "drew more than the pool held");
+    }
+
+    function test_newMarket_rejectsLiquidityBelowMinimum() public {
+        vm.prank(maker);
+        vm.expectRevert(AmmMarket.NoLiquidity.selector);
+        market.newMarket(
+            "dust", AmmMarket.Asset.BTC, STRIKE, closeTime, expiryTime, 1e6 - 1, 5_000, 0
+        );
+    }
+
+    // --- the trading fee ----------------------------------------------------
+
+    function test_newMarket_rejectsFeeAboveBound() public {
+        vm.prank(maker);
+        vm.expectRevert(AmmMarket.BadFee.selector);
+        market.newMarket(
+            "greedy", AmmMarket.Asset.BTC, STRIKE, closeTime, expiryTime, LIQUIDITY, 5_000, 501
+        );
+    }
+
+    /**
+     * The fee is retained as complete sets rather than moved anywhere, so it
+     * shows up as a product that grows on both a buy and a sell. That growth
+     * IS the LP's income; there is no separate balance to distribute.
+     */
+    function test_feeMakesTheProductGrowStrictly() public {
+        uint256 id = _newMarketWithFee(5_000, 100);
+
+        (uint256 y0, uint256 n0,) = _pool(id);
+        uint256 shares = _buy(id, alice, true, 200e6);
+        (uint256 y1, uint256 n1,) = _pool(id);
+        assertGt(y1 * n1, y0 * n0, "a buy did not grow the product");
+
+        vm.prank(alice);
+        market.sell(id, true, shares / 2, 0);
+        (uint256 y2, uint256 n2,) = _pool(id);
+        assertGt(y2 * n2, y1 * n1, "a sale did not grow the product");
+
+        _assertFullyCollateralised(id, _holders());
+    }
+
+    function test_quoteMirrorsTheFee() public {
+        uint256 id = _newMarketWithFee(5_000, 250);
+        (uint256 quoted, uint256 fee) = market.quote(id, true, 100e6);
+
+        assertEq(fee, 2.5e6, "fee is not 2.5% of the amount");
+        assertEq(_buy(id, alice, true, 100e6), quoted, "quote and fill disagree");
+    }
+
+    function test_quoteSellMirrorsTheFee() public {
+        uint256 id = _newMarketWithFee(5_000, 250);
+        uint256 shares = _buy(id, alice, true, 100e6);
+
+        (uint256 quoted, uint256 fee) = market.quoteSell(id, true, shares);
+        assertGt(fee, 0, "no fee charged on the exit");
+
+        vm.prank(alice);
+        assertEq(market.sell(id, true, shares, 0), quoted, "quote and fill disagree");
+    }
+
+    /**
+     * THE LOAD-BEARING TEST FOR THE WHOLE FEE DESIGN. Fees inflate the reserves
+     * without minting LP shares, so a later provider's money buys proportionally
+     * fewer shares — they are buying in at the already-earned price. Nothing
+     * checkpoints this; it falls out of minting against the current reserves.
+     */
+    function test_lateLpDoesNotShareEarlierFees() public {
+        uint256 id = _newMarketWithFee(5_000, 500);
+
+        // Volume before the second provider arrives.
+        for (uint256 i = 0; i < 5; i++) {
+            uint256 got = _buy(id, alice, true, 100e6);
+            vm.prank(alice);
+            market.sell(id, true, got, 0);
+        }
+
+        _addLiquidity(id, carol, LIQUIDITY);
+        _settle(id, AmmMarket.Outcome.Yes);
+
+        vm.prank(maker);
+        uint256 makerOut = market.withdrawLiquidity(id);
+        vm.prank(carol);
+        uint256 carolOut = market.withdrawLiquidity(id);
+
+        assertGt(makerOut, carolOut, "a late provider collected fees earned before they arrived");
+    }
+
+    /**
+     * Retained sets sit in BOTH reserves, so the fee comes back whichever side
+     * wins — and on a void, where each side is halved, `(f + f) / 2` is still f.
+     */
+    function test_feeAccruesToLpsWhicheverSideWins() public {
+        AmmMarket.Outcome[3] memory outcomes =
+            [AmmMarket.Outcome.Yes, AmmMarket.Outcome.No, AmmMarket.Outcome.Void];
+
+        for (uint256 i = 0; i < outcomes.length; i++) {
+            // Each pass settles, which warps the clock past this market's own
+            // expiry; the next pass needs to start from the top again.
+            vm.warp(1_700_000_000);
+            uint256 id = _newMarketWithFee(5_000, 500);
+
+            // Round trips leave the book where it started, so anything the sole
+            // provider recovers above the seed is fee income and nothing else.
+            for (uint256 j = 0; j < 4; j++) {
+                uint256 got = _buy(id, alice, j % 2 == 0, 100e6);
+                vm.prank(alice);
+                market.sell(id, j % 2 == 0, got, 0);
+            }
+
+            _settle(id, outcomes[i]);
+
+            // Opened at even money, so the provider holds no residual shares:
+            // the pool claim alone is the whole of what they get back, and
+            // anything above the seed is fee income.
+            vm.prank(maker);
+            uint256 recovered = market.withdrawLiquidity(id);
+
+            assertGt(recovered, LIQUIDITY, "fees did not reach the provider");
+        }
+    }
+
+    /**
+     * The exact fill this contract produced on Sepolia, pinned so a refactor
+     * that changes behaviour at zero fee cannot pass quietly: opened at 5000
+     * bps on a 10 mUSDC seed, a 3 mUSDC buy returned 5,307,692 shares and left
+     * the price at 6282 bps.
+     */
+    function test_zeroFeeReproducesTheKnownSepoliaFill() public {
+        vm.prank(maker);
+        uint256 id = market.newMarket(
+            "Will BTC be at or above $63,000?",
+            AmmMarket.Asset.BTC,
+            STRIKE,
+            closeTime,
+            expiryTime,
+            10e6,
+            5_000,
+            0
+        );
+
+        assertEq(_buy(id, alice, true, 3e6), 5_307_692, "fill changed");
+        assertEq(market.yesPriceBps(id), 6_282, "resulting price changed");
     }
 
     // --- fuzz ---------------------------------------------------------------
@@ -721,10 +1106,167 @@ contract AmmMarketTest is Test {
         }
 
         vm.prank(maker);
-        market.withdrawMakerLiquidity(id);
+        market.withdrawLiquidity(id);
 
         // Never short. Flooring on a void can strand a unit or two; it can
         // never leave a claim unpayable.
         assertLe(token.balanceOf(address(market)), 3, "left more than rounding dust");
+    }
+
+    /// A deposit of any size into any book leaves the price where it found it.
+    function testFuzz_addLiquidityNeverMovesThePrice(
+        uint96 deposit,
+        uint16 openingBps,
+        uint96 tradeBefore
+    ) public {
+        vm.assume(deposit > 1e6 && deposit < 50_000e6);
+        vm.assume(tradeBefore < 50_000e6);
+        uint256 opening = 100 + (uint256(openingBps) % 9_800);
+
+        uint256 id = _newMarketAt(opening);
+        if (tradeBefore > 1e6) _buy(id, alice, tradeBefore % 2 == 0, tradeBefore);
+
+        uint256 before = market.yesPriceBps(id);
+        _addLiquidity(id, carol, deposit);
+
+        assertApproxEqAbs(market.yesPriceBps(id), before, 1, "deposit moved the price");
+    }
+
+    /// Deposits interleaved with trades never break the backing of a share.
+    function testFuzz_collateralisationSurvivesLiquidityAndTrades(
+        uint96 a,
+        uint96 deposit,
+        uint96 b,
+        bool sideA,
+        bool sideB,
+        uint16 feeBps
+    ) public {
+        // Bounded rather than assumed: three narrow windows over uint96 are
+        // rare enough together that the fuzzer runs out of rejections before
+        // it finds enough valid cases.
+        uint256 amountA = bound(a, 1e6, 50_000e6);
+        uint256 amountB = bound(b, 1e6, 50_000e6);
+        uint256 provided = bound(deposit, 1e6, 50_000e6);
+
+        uint256 id = _newMarketWithFee(5_000, uint16(feeBps % 501));
+        _buy(id, alice, sideA, amountA);
+        _assertFullyCollateralised(id, _holders());
+
+        _addLiquidity(id, carol, provided);
+        _assertFullyCollateralised(id, _holders());
+
+        _buy(id, bob, sideB, amountB);
+        _assertFullyCollateralised(id, _holders());
+    }
+
+    /**
+     * The multi-LP descendant of the test that caught the insolvent void.
+     * VOID IS IN THE ROTATION DELIBERATELY: the pro-rata claim has its own way
+     * to go wrong there — halving the reserves and then dividing by the share
+     * total is not the same expression as doing it the other way round, and
+     * any ceiling that creeps into either makes the last claimant unpayable.
+     */
+    function testFuzz_everyClaimIsPayableWithMultipleLps(
+        uint96 a,
+        uint96 b,
+        uint96 deposit,
+        uint8 result
+    ) public {
+        uint256 amountA = bound(a, 1e6, 50_000e6);
+        uint256 amountB = bound(b, 1e6, 50_000e6);
+        uint256 provided = bound(deposit, 1e6, 50_000e6);
+
+        AmmMarket.Outcome outcome = [
+            AmmMarket.Outcome.Yes,
+            AmmMarket.Outcome.No,
+            AmmMarket.Outcome.Void
+        ][result % 3];
+
+        uint256 id = _newMarketWithFee(5_000, 30);
+        _addLiquidity(id, carol, provided);
+        _buy(id, alice, true, amountA);
+        _buy(id, bob, false, amountB);
+        _settle(id, outcome);
+
+        address[4] memory who = [alice, bob, maker, carol];
+        for (uint256 i = 0; i < who.length; i++) {
+            uint256 yes = market.yesShares(id, who[i]);
+            uint256 no = market.noShares(id, who[i]);
+            uint256 owed = outcome == AmmMarket.Outcome.Void
+                ? (yes + no) / 2
+                : (outcome == AmmMarket.Outcome.Yes ? yes : no);
+            if (owed > 0) {
+                vm.prank(who[i]);
+                market.redeem(id);
+            }
+        }
+
+        vm.prank(maker);
+        market.withdrawLiquidity(id);
+        vm.prank(carol);
+        market.withdrawLiquidity(id);
+
+        // One floored division per claimant, so at most one unit each can be
+        // stranded — four claimants here, plus the void's own halving. The
+        // bound is derived, not raised until it passed.
+        assertLe(token.balanceOf(address(market)), 6, "left more than rounding dust");
+    }
+
+    /// Providers can never collectively draw more than the pool actually holds.
+    function testFuzz_lpWithdrawalsNeverExceedTheWinningReserve(
+        uint96 deposit,
+        uint96 trade,
+        bool side
+    ) public {
+        vm.assume(deposit > 1e6 && deposit < 50_000e6);
+        vm.assume(trade > 1e6 && trade < 50_000e6);
+
+        uint256 id = _newMarketWithFee(5_000, 30);
+        _addLiquidity(id, carol, deposit);
+        _buy(id, alice, side, trade);
+        _settle(id, AmmMarket.Outcome.Yes);
+
+        (uint256 yesReserve,,) = _pool(id);
+
+        vm.prank(maker);
+        uint256 makerOut = market.withdrawLiquidity(id);
+        vm.prank(carol);
+        uint256 carolOut = market.withdrawLiquidity(id);
+
+        assertLe(makerOut + carolOut, yesReserve, "providers drew more than the reserve");
+    }
+
+    /// Whatever the fee, the quote is what the trade actually does.
+    function testFuzz_quoteEqualsExecutionUnderAnyFee(uint96 amount, uint16 feeBps, bool isYes)
+        public
+    {
+        vm.assume(amount > 1e6 && amount < 50_000e6);
+
+        uint256 id = _newMarketWithFee(5_000, uint16(feeBps % 501));
+
+        (uint256 quotedBuy,) = market.quote(id, isYes, amount);
+        uint256 got = _buy(id, alice, isYes, amount);
+        assertEq(got, quotedBuy, "buy quote drifted from the fill");
+
+        (uint256 quotedSell,) = market.quoteSell(id, isYes, got);
+        vm.prank(alice);
+        assertEq(market.sell(id, isYes, got, 0), quotedSell, "sell quote drifted from the fill");
+    }
+
+    /// The fee can only ever add depth, never take it.
+    function testFuzz_feeNeverShrinksTheProduct(uint96 amount, uint16 feeBps, bool isYes) public {
+        vm.assume(amount > 1e6 && amount < 50_000e6);
+
+        uint256 id = _newMarketWithFee(5_000, uint16(feeBps % 501));
+
+        (uint256 y0, uint256 n0,) = _pool(id);
+        uint256 got = _buy(id, alice, isYes, amount);
+        (uint256 y1, uint256 n1,) = _pool(id);
+        assertGe(y1 * n1, y0 * n0, "the buy shrank the product");
+
+        vm.prank(alice);
+        market.sell(id, isYes, got, 0);
+        (uint256 y2, uint256 n2,) = _pool(id);
+        assertGe(y2 * n2, y1 * n1, "the sale shrank the product");
     }
 }

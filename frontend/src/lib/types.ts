@@ -126,7 +126,12 @@ export interface AmmMarket extends MarketBase {
   noReserve: bigint;
   /** Complete sets minted — the money actually at stake in this market. */
   collateral: bigint;
-  maker: `0x${string}`;
+  /** Whoever opened the market. Metadata: they hold no special powers. */
+  creator: `0x${string}`;
+  /** Denominator for every provider's claim on the pool. */
+  totalLpShares: bigint;
+  /** Trading fee retained by the pool, 0–500. */
+  feeBps: number;
   observedPrice: bigint;
 }
 
@@ -183,7 +188,40 @@ export interface StakeEvent {
     direction: "buy" | "sell";
     /** Shares gained on a buy, given up on a sell. */
     shares: bigint;
+    /**
+     * The part of the trade the pool kept. Carried because it is the only
+     * record of what a liquidity provider earned, and because the executed
+     * price is `(amount - fee) / shares` — using `amount` inflates it, and
+     * since NO trades are plotted as `100 - p`, the two sides would drift in
+     * opposite directions rather than merely being offset.
+     */
+    fee: bigint;
   };
+}
+
+/**
+ * One liquidity movement: a deposit, or a post-settlement withdrawal.
+ *
+ * Kept apart from `StakeEvent` because providing liquidity is not a trade —
+ * it takes no side and it moves the pool's depth rather than its price. What
+ * makes it worth recording as an event at all is `totalLpShares`: with the
+ * running total at each deposit, an ordered replay can say what fraction of
+ * the pool each provider held at any block, and therefore attribute each
+ * trade's fee to whoever was actually providing at the time.
+ */
+export interface LpEvent {
+  /** Composite market key — see MarketBase.key. */
+  marketKey: string;
+  provider: `0x${string}`;
+  direction: "add" | "withdraw";
+  /** Collateral deposited on an add, received on a withdrawal. */
+  amount: bigint;
+  /** LP shares minted on an add, redeemed on a withdrawal. */
+  lpShares: bigint;
+  /** The market's total AFTER this deposit. Zero on a withdrawal. */
+  totalLpShares: bigint;
+  blockNumber: bigint;
+  txHash: `0x${string}`;
 }
 
 export interface SettledEvent {
@@ -221,6 +259,47 @@ export interface Position {
    */
   cost: bigint;
   status: "Open" | "Awaiting settlement" | "Won" | "Lost" | "Refundable" | "Claimed";
+  /**
+   * Present when this wallet has provided liquidity to the market.
+   *
+   * Deliberately separate from `yes`/`no`/`cost` rather than folded into them:
+   * a provider's money is at risk in two different ways at once — the residual
+   * shares the deposit handed them, which behave exactly like a trader's, and
+   * a pro-rata claim on the pool, which does not. They are also claimed by two
+   * different calls with two different one-shot guards, so a view that merges
+   * them will offer one button where two are needed.
+   */
+  lp?: LpPosition;
+}
+
+/**
+ * A liquidity position, valued.
+ *
+ * WHAT IMPERMANENT LOSS MEANS HERE. In a binary market with complete sets the
+ * counterfactual is trivial: `d` collateral minted into `d` YES and `d` NO is
+ * worth exactly `d` at settlement whatever the outcome, and not providing at
+ * all is also worth `d`. So the benchmark is par, and there is no separate
+ * divergence term to model the way a spot AMM needs one. The provider's whole
+ * story is `pnl = value - deposited`, split into what the fees earned and what
+ * the traders took: `impermanentLoss = feesEarned - pnl`.
+ */
+export interface LpPosition {
+  shares: bigint;
+  totalShares: bigint;
+  /** Every deposit this wallet made, including the seed if they opened it. */
+  deposited: bigint;
+  /**
+   * Fees attributed by an ordered replay of deposits and trades — NOT a slice
+   * of the lifetime total at today's shares, which would retroactively pay a
+   * late provider for volume that traded before they arrived.
+   */
+  feesEarned: bigint;
+  /** The pro-rata claim: settled from chain, otherwise marked at the price. */
+  poolValue: bigint;
+  /** True once the pool claim has been drawn; the residual shares are separate. */
+  withdrawn: boolean;
+  /** `poolValue` is a mark rather than a claim while the market is open. */
+  marked: boolean;
 }
 
 export interface TraderStats {

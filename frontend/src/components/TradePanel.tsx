@@ -93,22 +93,37 @@ export function TradePanel({
    * from the one that actually executes.
    */
   const [quotedShares, setQuotedShares] = useState<bigint | null>(null);
+  /** The pool's cut of this trade, shown rather than buried in the price. */
+  const [quotedFee, setQuotedFee] = useState<bigint | null>(null);
   useEffect(() => {
     if (!isAmm || !amount || amount <= 0n) {
       setQuotedShares(null);
+      setQuotedFee(null);
       return;
     }
     let cancelled = false;
     const quoting =
       mode === "buy"
-        ? quoteAmmShares(market, side === "yes", amount)
-        : quoteAmmSell(market, side === "yes", amount);
+        ? quoteAmmShares(market, side === "yes", amount).then((q) => ({
+            out: q.shares,
+            fee: q.fee,
+          }))
+        : quoteAmmSell(market, side === "yes", amount).then((q) => ({
+            out: q.collateral,
+            fee: q.fee,
+          }));
     void quoting
       .then((q) => {
-        if (!cancelled) setQuotedShares(q);
+        if (!cancelled) {
+          setQuotedShares(q.out);
+          setQuotedFee(q.fee);
+        }
       })
       .catch(() => {
-        if (!cancelled) setQuotedShares(null);
+        if (!cancelled) {
+          setQuotedShares(null);
+          setQuotedFee(null);
+        }
       });
     return () => {
       cancelled = true;
@@ -134,7 +149,7 @@ export function TradePanel({
     // render time and submitting minutes later would either revert constantly
     // or, with no bound at all, fill at whatever the curve had moved to.
     const fresh = await quoteAmmShares(market, side === "yes", amount);
-    const minOut = (fresh * 99n) / 100n;
+    const minOut = (fresh.shares * 99n) / 100n;
     await run("staking", (a) => sendAmmBuy(a, market, side === "yes", amount, minOut));
   };
 
@@ -145,7 +160,7 @@ export function TradePanel({
     // contract's own bookkeeping, not by an ERC-20 the pool must be allowed to
     // move.
     const fresh = await quoteAmmSell(market, side === "yes", amount);
-    const minOut = (fresh * 99n) / 100n;
+    const minOut = (fresh.collateral * 99n) / 100n;
     await run("staking", (a) => sendAmmSell(a, market, side === "yes", amount, minOut));
   };
 
@@ -304,6 +319,23 @@ export function TradePanel({
                     : "—"}
                 </span>
               </div>
+              {/*
+                * Shown as its own line rather than folded into the price. The
+                * fee is not the market maker's margin on a spread — it is paid
+                * to whoever provided the liquidity, and a trader is entitled to
+                * see the size of it before agreeing.
+                */}
+              {market.categoryId === "amm" && market.feeBps > 0 && (
+                <div
+                  className="muted-strong"
+                  style={{ display: "flex", justifyContent: "space-between", fontSize: 11 }}
+                >
+                  <span>Pool fee ({(market.feeBps / 100).toFixed(2)}%)</span>
+                  <span style={{ color: "var(--color-text)" }}>
+                    {quotedFee === null ? "—" : formatToken(quotedFee, { symbol: true })}
+                  </span>
+                </div>
+              )}
               {mode === "buy" && (
                 <div
                   className="muted-strong"
@@ -459,6 +491,16 @@ function friendlyError(e: unknown): string {
   if (/TooEarly/.test(msg)) return "Too early — settlement is not yet allowed.";
   if (/NothingToClaim/.test(msg)) return "Nothing to claim on this market.";
   if (/AlreadyClaimed/.test(msg)) return "Already claimed.";
+  // The AMM's own reverts. Without these the user saw a raw selector for the
+  // most ordinary failures on the contract — a price that moved under them,
+  // or a claim they had already made.
+  if (/SlippageTooHigh/.test(msg)) return "Price moved — try again, or trade a smaller size.";
+  if (/NotEnoughShares/.test(msg)) return "You do not hold that many shares.";
+  if (/NothingToRedeem/.test(msg)) return "Nothing to redeem on this market.";
+  if (/AlreadyRedeemed/.test(msg)) return "Already redeemed.";
+  if (/AlreadyWithdrawn/.test(msg)) return "Liquidity already withdrawn.";
+  if (/NotAnLp/.test(msg)) return "This wallet has not provided liquidity here.";
+  if (/NoLiquidity/.test(msg)) return "Amount is too small for this pool.";
   if (/insufficient funds/i.test(msg)) return "Not enough Sepolia ETH for gas.";
   const first = msg.split("\n")[0];
   return first.length > 160 ? `${first.slice(0, 160)}…` : first;

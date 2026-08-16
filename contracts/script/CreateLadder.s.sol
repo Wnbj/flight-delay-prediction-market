@@ -31,6 +31,7 @@ import {MockUSDC} from "../src/MockUSDC.sol";
  * Optional:
  *   CLOSE_IN, EXPIRY_IN     - seconds from now (default 7200 / 9000)
  *   LIQUIDITY               - per rung, 6-decimal token units (default 40e6)
+ *   FEE_BPS                 - trading fee retained by the pool (default 30)
  */
 contract CreateLadder is Script {
     function run() external {
@@ -44,6 +45,7 @@ contract CreateLadder is Script {
         uint256[] memory openingBps = vm.envUint("OPEN_BPS", ",");
         require(openingBps.length == rungs, "OPEN_BPS must have one entry per rung");
         uint256 liquidity = vm.envOr("LIQUIDITY", uint256(40e6));
+        uint16 feeBps = uint16(vm.envOr("FEE_BPS", uint256(30)));
 
         uint64 closeTime = uint64(block.timestamp + vm.envOr("CLOSE_IN", uint256(7200)));
         uint64 expiryTime = uint64(block.timestamp + vm.envOr("EXPIRY_IN", uint256(9000)));
@@ -59,7 +61,8 @@ contract CreateLadder is Script {
                 closeTime,
                 expiryTime,
                 liquidity,
-                openingBps[i]
+                openingBps[i],
+                feeBps
             );
             console2.log("rung", id, "strike", strike);
         }

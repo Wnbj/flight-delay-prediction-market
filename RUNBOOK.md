@@ -752,14 +752,47 @@ refund**: someone who bought YES at 70 cents gets 50 back. Share balances do
 not record what anyone paid, so a true refund is not recoverable from them and
 pretending otherwise would be insolvent.
 
-### One liquidity provider, who is the counterparty
+### Any number of liquidity providers, who are the counterparty
 
-Multi-LP means LP tokens, proportional withdrawal and impermanent loss — a
-large surface where mistakes are silent. The creator seeds the market and
-redeems whatever of the winning side the pool still holds. If traders were
-right, they recover less than they put in; that shortfall is exactly what
-funded the traders' profit, and it is bounded by the seed. Two tests pin both
-directions.
+Providers are the other side of every trade. If traders were right, the pool is
+left holding mostly the losing side and providers recover less than they put in;
+that shortfall is exactly what funded the traders' profit, and it is bounded by
+what they supplied.
+
+`addLiquidity` scales BOTH reserves by `d / max(Y, N)`, which is the only way to
+add depth without moving the price, and mints LP shares in proportion. Because a
+deposit mints complete sets while the pool can only absorb them in its own
+ratio, the depositor keeps the remainder as a real directional position — the
+same thing that happens to a creator opening away from even money, and the part
+of providing liquidity people do not expect, so the UI quotes it explicitly.
+
+After settlement each provider draws `winningReserve * shares / total`, floored,
+so the sum can never exceed what the pool holds; rounding strands at most a unit
+per provider. Withdrawal is **post-settlement only** — no remove-while-open,
+which is where the silent mistakes live.
+
+A provider therefore has **two independent claims**, with two separate one-shot
+guards: `withdrawLiquidity` for the pool, `redeem` for the residual shares.
+Neither consumes the other, which is why the UI offers two buttons.
+
+### The trading fee, retained as complete sets
+
+`feeBps` is fixed per market at creation, bounded at 500, and never changeable —
+it is a term the trader read in the quote. The fee is not moved anywhere: the
+full amount is minted into complete sets and the fee simply stays in both
+reserves, which raises the constant product and therefore the value of every LP
+share. Two properties fall out of that rather than needing machinery:
+
+- **Outcome-independent.** Whichever side wins, the winning reserve carries the
+  fees with it; on a void, `(f + f) / 2` is still `f`.
+- **Late providers cannot claim earlier fees.** Fees inflate the reserves
+  without minting shares, so a later deposit buys proportionally fewer of them.
+
+`quote`/`quoteSell` route through the same `private pure` helpers as
+`buy`/`sell`. That is not tidiness: the UI turns those quotes into a hard 1%
+slippage bound, so a fee computed even one rounding step differently shows up as
+trades that fail for no visible reason — or gets absorbed silently inside the
+bound and never noticed.
 
 ### Settlement reuses the crypto handler
 
@@ -816,8 +849,13 @@ That makes it work retroactively on ladders created before the code existed,
 and it is also the honest definition — markets over the same thing resolving at
 the same instant *are* the same question.
 
+`OPEN_BPS` is required and must have one entry per rung — the script refuses a
+mismatch rather than seeding a ladder at the wrong shape. `FEE_BPS` is optional
+and defaults to 30.
+
 ```bash
 AMM_MARKET=0x63Dd... TOKEN=0xcd12... STRIKE_LOW=62500 STRIKE_STEP=250 RUNGS=5 \
+OPEN_BPS=8500,7000,4500,2500,1200 FEE_BPS=30 \
 forge script script/CreateLadder.s.sol:CreateLadder --rpc-url $SEPOLIA_RPC_URL --broadcast
 ```
 
@@ -832,8 +870,10 @@ five of them is a column of blanks.
 ### Ladders open at real prices, not at even money
 
 `newMarket` takes an opening price. The pool holds reserves in the ratio
-`(1-p):p` and the maker keeps the remainder of the other side — a real
-position, which is what having a view means.
+`(1-p):p` and the creator keeps the remainder of the other side — a real
+position, which is what having a view means. `addLiquidity` does the same
+arithmetic against the reserves as they stand, which is why a later deposit
+also hands its provider a position rather than pure exposure to volume.
 
 Before this, seeding always minted equal reserves, so every rung opened at 50%
 whatever its strike. Five rungs all reading 50% say nothing; the shape IS the
@@ -852,7 +892,7 @@ landing on each target exactly:
 | $63,250 | 25% | 75% |
 | $63,500 | 12% | 88% |
 
-The maker ends up holding 32.94 YES at the $62,500 rung and 34.55 NO at the
+The creator ends up holding 32.94 YES at the $62,500 rung and 34.55 NO at the
 $63,500 one — long whichever side they priced as likely, at both ends. Quoting
 a price is not free, and it no longer looks free.
 
@@ -871,8 +911,8 @@ there is no event title on chain.
 
 | suite | count | command |
 |---|---|---|
-| contracts | 140 | `cd contracts && forge test` |
-| frontend | 101 | `cd frontend && bun run test` |
+| contracts | 170 | `cd contracts && forge test` |
+| frontend | 142 | `cd frontend && bun run test` |
 | workflow | 35 | `cd cre/settlement && bun test` |
 
 The frontend and workflow suites were added after a routing bug reached a

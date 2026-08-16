@@ -2559,6 +2559,32 @@ export const reserveMarketAbi = [
 export const ammMarketAbi = [
     {
       "type": "function",
+      "name": "MAX_FEE_BPS",
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "",
+          "type": "uint16",
+          "internalType": "uint16"
+        }
+      ],
+      "stateMutability": "view"
+    },
+    {
+      "type": "function",
+      "name": "MIN_LIQUIDITY",
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "",
+          "type": "uint256",
+          "internalType": "uint256"
+        }
+      ],
+      "stateMutability": "view"
+    },
+    {
+      "type": "function",
       "name": "SETTLEMENT_DELAY",
       "inputs": [],
       "outputs": [
@@ -2569,6 +2595,35 @@ export const ammMarketAbi = [
         }
       ],
       "stateMutability": "view"
+    },
+    {
+      "type": "function",
+      "name": "addLiquidity",
+      "inputs": [
+        {
+          "name": "marketId",
+          "type": "uint256",
+          "internalType": "uint256"
+        },
+        {
+          "name": "amount",
+          "type": "uint256",
+          "internalType": "uint256"
+        },
+        {
+          "name": "minLpSharesOut",
+          "type": "uint256",
+          "internalType": "uint256"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "lpSharesMinted",
+          "type": "uint256",
+          "internalType": "uint256"
+        }
+      ],
+      "stateMutability": "nonpayable"
     },
     {
       "type": "function",
@@ -2603,6 +2658,93 @@ export const ammMarketAbi = [
         }
       ],
       "stateMutability": "nonpayable"
+    },
+    {
+      "type": "function",
+      "name": "lpPosition",
+      "inputs": [
+        {
+          "name": "marketId",
+          "type": "uint256",
+          "internalType": "uint256"
+        },
+        {
+          "name": "who",
+          "type": "address",
+          "internalType": "address"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "shares",
+          "type": "uint256",
+          "internalType": "uint256"
+        },
+        {
+          "name": "totalShares",
+          "type": "uint256",
+          "internalType": "uint256"
+        },
+        {
+          "name": "withdrawn",
+          "type": "bool",
+          "internalType": "bool"
+        },
+        {
+          "name": "claimable",
+          "type": "uint256",
+          "internalType": "uint256"
+        }
+      ],
+      "stateMutability": "view"
+    },
+    {
+      "type": "function",
+      "name": "lpShares",
+      "inputs": [
+        {
+          "name": "",
+          "type": "uint256",
+          "internalType": "uint256"
+        },
+        {
+          "name": "",
+          "type": "address",
+          "internalType": "address"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "",
+          "type": "uint256",
+          "internalType": "uint256"
+        }
+      ],
+      "stateMutability": "view"
+    },
+    {
+      "type": "function",
+      "name": "lpWithdrawn",
+      "inputs": [
+        {
+          "name": "",
+          "type": "uint256",
+          "internalType": "uint256"
+        },
+        {
+          "name": "",
+          "type": "address",
+          "internalType": "address"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "",
+          "type": "bool",
+          "internalType": "bool"
+        }
+      ],
+      "stateMutability": "view"
     },
     {
       "type": "function",
@@ -2655,6 +2797,11 @@ export const ammMarketAbi = [
           "name": "openingYesPriceBps",
           "type": "uint256",
           "internalType": "uint256"
+        },
+        {
+          "name": "feeBps",
+          "type": "uint16",
+          "internalType": "uint16"
         }
       ],
       "outputs": [
@@ -2692,7 +2839,7 @@ export const ammMarketAbi = [
     },
     {
       "type": "function",
-      "name": "pool",
+      "name": "poolState",
       "inputs": [
         {
           "name": "marketId",
@@ -2702,44 +2849,61 @@ export const ammMarketAbi = [
       ],
       "outputs": [
         {
-          "name": "status",
-          "type": "uint8",
-          "internalType": "uint8"
-        },
-        {
-          "name": "outcome",
-          "type": "uint8",
-          "internalType": "uint8"
-        },
-        {
-          "name": "observedValue",
-          "type": "int256",
-          "internalType": "int256"
-        },
-        {
-          "name": "evidenceHash",
-          "type": "bytes32",
-          "internalType": "bytes32"
-        },
-        {
-          "name": "maker",
-          "type": "address",
-          "internalType": "address"
-        },
-        {
-          "name": "yesReserve",
-          "type": "uint256",
-          "internalType": "uint256"
-        },
-        {
-          "name": "noReserve",
-          "type": "uint256",
-          "internalType": "uint256"
-        },
-        {
-          "name": "collateral",
-          "type": "uint256",
-          "internalType": "uint256"
+          "name": "",
+          "type": "tuple",
+          "internalType": "struct AmmMarket.PoolView",
+          "components": [
+            {
+              "name": "status",
+              "type": "uint8",
+              "internalType": "uint8"
+            },
+            {
+              "name": "outcome",
+              "type": "uint8",
+              "internalType": "uint8"
+            },
+            {
+              "name": "observedValue",
+              "type": "int256",
+              "internalType": "int256"
+            },
+            {
+              "name": "evidenceHash",
+              "type": "bytes32",
+              "internalType": "bytes32"
+            },
+            {
+              "name": "yesReserve",
+              "type": "uint256",
+              "internalType": "uint256"
+            },
+            {
+              "name": "noReserve",
+              "type": "uint256",
+              "internalType": "uint256"
+            },
+            {
+              "name": "collateral",
+              "type": "uint256",
+              "internalType": "uint256"
+            },
+            {
+              "name": "totalLpShares",
+              "type": "uint256",
+              "internalType": "uint256"
+            },
+            {
+              "name": "feeBps",
+              "type": "uint16",
+              "internalType": "uint16"
+            },
+            {
+              "name": "creator",
+              "type": "address",
+              "internalType": "address"
+            }
+          ]
         }
       ],
       "stateMutability": "view"
@@ -2766,7 +2930,46 @@ export const ammMarketAbi = [
       ],
       "outputs": [
         {
-          "name": "",
+          "name": "sharesOut",
+          "type": "uint256",
+          "internalType": "uint256"
+        },
+        {
+          "name": "fee",
+          "type": "uint256",
+          "internalType": "uint256"
+        }
+      ],
+      "stateMutability": "view"
+    },
+    {
+      "type": "function",
+      "name": "quoteAddLiquidity",
+      "inputs": [
+        {
+          "name": "marketId",
+          "type": "uint256",
+          "internalType": "uint256"
+        },
+        {
+          "name": "amount",
+          "type": "uint256",
+          "internalType": "uint256"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "lpSharesMinted",
+          "type": "uint256",
+          "internalType": "uint256"
+        },
+        {
+          "name": "yesResidual",
+          "type": "uint256",
+          "internalType": "uint256"
+        },
+        {
+          "name": "noResidual",
           "type": "uint256",
           "internalType": "uint256"
         }
@@ -2795,7 +2998,12 @@ export const ammMarketAbi = [
       ],
       "outputs": [
         {
-          "name": "",
+          "name": "collateralOut",
+          "type": "uint256",
+          "internalType": "uint256"
+        },
+        {
+          "name": "fee",
           "type": "uint256",
           "internalType": "uint256"
         }
@@ -2945,7 +3153,7 @@ export const ammMarketAbi = [
     },
     {
       "type": "function",
-      "name": "withdrawMakerLiquidity",
+      "name": "withdrawLiquidity",
       "inputs": [
         {
           "name": "marketId",
@@ -2953,7 +3161,13 @@ export const ammMarketAbi = [
           "internalType": "uint256"
         }
       ],
-      "outputs": [],
+      "outputs": [
+        {
+          "name": "amount",
+          "type": "uint256",
+          "internalType": "uint256"
+        }
+      ],
       "stateMutability": "nonpayable"
     },
     {
@@ -3032,6 +3246,92 @@ export const ammMarketAbi = [
           "type": "uint256",
           "indexed": false,
           "internalType": "uint256"
+        },
+        {
+          "name": "fee",
+          "type": "uint256",
+          "indexed": false,
+          "internalType": "uint256"
+        }
+      ],
+      "anonymous": false
+    },
+    {
+      "type": "event",
+      "name": "LiquidityAdded",
+      "inputs": [
+        {
+          "name": "marketId",
+          "type": "uint256",
+          "indexed": true,
+          "internalType": "uint256"
+        },
+        {
+          "name": "provider",
+          "type": "address",
+          "indexed": true,
+          "internalType": "address"
+        },
+        {
+          "name": "collateralIn",
+          "type": "uint256",
+          "indexed": false,
+          "internalType": "uint256"
+        },
+        {
+          "name": "lpSharesMinted",
+          "type": "uint256",
+          "indexed": false,
+          "internalType": "uint256"
+        },
+        {
+          "name": "totalLpShares",
+          "type": "uint256",
+          "indexed": false,
+          "internalType": "uint256"
+        },
+        {
+          "name": "yesResidual",
+          "type": "uint256",
+          "indexed": false,
+          "internalType": "uint256"
+        },
+        {
+          "name": "noResidual",
+          "type": "uint256",
+          "indexed": false,
+          "internalType": "uint256"
+        }
+      ],
+      "anonymous": false
+    },
+    {
+      "type": "event",
+      "name": "LiquidityWithdrawn",
+      "inputs": [
+        {
+          "name": "marketId",
+          "type": "uint256",
+          "indexed": true,
+          "internalType": "uint256"
+        },
+        {
+          "name": "provider",
+          "type": "address",
+          "indexed": true,
+          "internalType": "address"
+        },
+        {
+          "name": "lpShares",
+          "type": "uint256",
+          "indexed": false,
+          "internalType": "uint256"
+        },
+        {
+          "name": "amount",
+          "type": "uint256",
+          "indexed": false,
+          "internalType": "uint256"
         }
       ],
       "anonymous": false
@@ -3069,6 +3369,18 @@ export const ammMarketAbi = [
           "type": "uint256",
           "indexed": false,
           "internalType": "uint256"
+        },
+        {
+          "name": "creator",
+          "type": "address",
+          "indexed": false,
+          "internalType": "address"
+        },
+        {
+          "name": "feeBps",
+          "type": "uint16",
+          "indexed": false,
+          "internalType": "uint16"
         }
       ],
       "anonymous": false
@@ -3193,6 +3505,12 @@ export const ammMarketAbi = [
           "type": "uint256",
           "indexed": false,
           "internalType": "uint256"
+        },
+        {
+          "name": "fee",
+          "type": "uint256",
+          "indexed": false,
+          "internalType": "uint256"
         }
       ],
       "anonymous": false
@@ -3204,7 +3522,12 @@ export const ammMarketAbi = [
     },
     {
       "type": "error",
-      "name": "BadExpiry",
+      "name": "AlreadyWithdrawn",
+      "inputs": []
+    },
+    {
+      "type": "error",
+      "name": "BadFee",
       "inputs": []
     },
     {
@@ -3219,81 +3542,12 @@ export const ammMarketAbi = [
     },
     {
       "type": "error",
-      "name": "BadStrike",
-      "inputs": []
-    },
-    {
-      "type": "error",
-      "name": "InvalidAuthor",
-      "inputs": [
-        {
-          "name": "received",
-          "type": "address",
-          "internalType": "address"
-        },
-        {
-          "name": "expected",
-          "type": "address",
-          "internalType": "address"
-        }
-      ]
-    },
-    {
-      "type": "error",
-      "name": "InvalidForwarderAddress",
-      "inputs": []
-    },
-    {
-      "type": "error",
-      "name": "InvalidSender",
-      "inputs": [
-        {
-          "name": "sender",
-          "type": "address",
-          "internalType": "address"
-        },
-        {
-          "name": "expected",
-          "type": "address",
-          "internalType": "address"
-        }
-      ]
-    },
-    {
-      "type": "error",
-      "name": "InvalidWorkflowId",
-      "inputs": [
-        {
-          "name": "received",
-          "type": "bytes32",
-          "internalType": "bytes32"
-        },
-        {
-          "name": "expected",
-          "type": "bytes32",
-          "internalType": "bytes32"
-        }
-      ]
-    },
-    {
-      "type": "error",
-      "name": "InvalidWorkflowName",
-      "inputs": [
-        {
-          "name": "received",
-          "type": "bytes10",
-          "internalType": "bytes10"
-        },
-        {
-          "name": "expected",
-          "type": "bytes10",
-          "internalType": "bytes10"
-        }
-      ]
-    },
-    {
-      "type": "error",
       "name": "NoLiquidity",
+      "inputs": []
+    },
+    {
+      "type": "error",
+      "name": "NotAnLp",
       "inputs": []
     },
     {
@@ -3308,39 +3562,6 @@ export const ammMarketAbi = [
     },
     {
       "type": "error",
-      "name": "OwnableInvalidOwner",
-      "inputs": [
-        {
-          "name": "owner",
-          "type": "address",
-          "internalType": "address"
-        }
-      ]
-    },
-    {
-      "type": "error",
-      "name": "OwnableUnauthorizedAccount",
-      "inputs": [
-        {
-          "name": "account",
-          "type": "address",
-          "internalType": "address"
-        }
-      ]
-    },
-    {
-      "type": "error",
-      "name": "SafeERC20FailedOperation",
-      "inputs": [
-        {
-          "name": "token",
-          "type": "address",
-          "internalType": "address"
-        }
-      ]
-    },
-    {
-      "type": "error",
       "name": "SlippageTooHigh",
       "inputs": []
     },
@@ -3352,11 +3573,6 @@ export const ammMarketAbi = [
     {
       "type": "error",
       "name": "TooLate",
-      "inputs": []
-    },
-    {
-      "type": "error",
-      "name": "WorkflowNameRequiresAuthorValidation",
       "inputs": []
     }
   ] as const;

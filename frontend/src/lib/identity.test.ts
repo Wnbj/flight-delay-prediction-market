@@ -112,7 +112,10 @@ export const amm0: Market = {
   yesReserve: 7_692_308n,
   noReserve: 13_000_000n,
   collateral: 13_000_000n,
-  maker: "0xEe7b1Bf33f5aa65c7294bAa81EbcD89f732DB90a",
+  creator: "0xEe7b1Bf33f5aa65c7294bAa81EbcD89f732DB90a",
+  // The seed was 10 mUSDC, denominated 1:1 in LP shares at creation.
+  totalLpShares: 10_000_000n,
+  feeBps: 30,
   observedPrice: 0n,
 };
 
