@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef } from "react";
 import { CATEGORIES } from "../lib/categories";
 import { formatToken } from "../lib/format";
 import { impliedYesPercent, totalPool } from "../lib/parimutuel";
+import { groupIntoEvents, isLadder } from "../lib/events";
 import { MarketStatus, type CategoryId, type Market, type StakeEvent } from "../lib/types";
 import { MarketCard } from "../components/MarketCard";
 import { Reveal } from "../components/Reveal";
@@ -52,10 +53,19 @@ export function Landing({
     return Math.round(withOdds.reduce((a, b) => a + b, 0) / withOdds.length);
   }, [markets]);
 
+  /**
+   * Grouped before ranking, so a five-rung ladder competes for a slot as one
+   * question rather than filling the whole row with near-identical cards —
+   * the same collapsing the markets list does.
+   */
   const trending = useMemo(
     () =>
-      [...markets]
-        .sort((a, b) => (totalPool(b) > totalPool(a) ? 1 : totalPool(b) < totalPool(a) ? -1 : 0))
+      groupIntoEvents(markets)
+        .map((event) => ({
+          event,
+          size: event.rungs.reduce((a, m) => a + totalPool(m), 0n),
+        }))
+        .sort((a, b) => (b.size > a.size ? 1 : b.size < a.size ? -1 : 0))
         .slice(0, 3),
     [markets],
   );
@@ -208,9 +218,9 @@ export function Landing({
             Trade on what happens next.
           </h1>
           <p style={{ fontSize: 16, opacity: 0.8, maxWidth: 520, margin: "0 0 var(--space-6)" }}>
-            Parimutuel markets settled by a Chainlink CRE workflow — an oracle network reads the
-            real-world result and writes it on chain. Every percentage is a live probability, set
-            by the people staking on it.
+            Markets settled by a Chainlink CRE workflow — an oracle network reads the real-world
+            result and writes it on chain. Every percentage is a live probability: pooled odds on
+            most markets, a quoted price on the AMM ones.
           </p>
           <div style={{ display: "flex", gap: "var(--space-3)", flexWrap: "wrap" }}>
             <button className="btn btn-accent" onClick={() => onNavigate("markets")}>
@@ -333,9 +343,14 @@ export function Landing({
           <EmptyState />
         ) : (
           <div className="grid-3" style={{ maxWidth: 1200 }}>
-            {trending.map((m, i) => (
-              <Reveal key={m.key} delay={i * 60}>
-                <MarketCard market={m} events={stakeEvents} onOpen={onOpenMarket} />
+            {trending.map(({ event }, i) => (
+              <Reveal key={event.key} delay={i * 60}>
+                <MarketCard
+                  market={event.featured}
+                  ladder={isLadder(event) ? event : undefined}
+                  events={stakeEvents}
+                  onOpen={onOpenMarket}
+                />
               </Reveal>
             ))}
           </div>
