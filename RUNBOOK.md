@@ -770,6 +770,27 @@ That exposed a latent bug: the handler wrote its report back to a *config*
 address, which would have delivered one contract's result to the other. It now
 replies to the contract the log came from.
 
+### Selling: the exit that makes a locked price mean something
+
+Without it you can enter a position and then only wait, which is a bet with
+extra steps rather than a market. A sale is the mirror of a buy: shares go back
+into the pool, and enough complete sets are burned to restore the constant
+product. Solving `(Y + s - c)(N - c) = k` for the payout gives
+
+```
+c = [ (Y + N + s) - sqrt( (Y + N + s)^2 - 4·s·N ) ] / 2
+```
+
+with the OPPOSITE reserve inside the discriminant — `N` selling YES, `Y`
+selling NO.
+
+**The rounding direction is the whole game.** `sqrt` must be rounded UP so the
+payout rounds down and the remainder stays with the pool. Checked numerically
+before a line of Solidity was written: with a floored root the product SHRANK
+on every trade — the pool overpaying slightly each time until it could not pay
+at all. Verified again by flipping it back in the finished contract, where six
+tests fail.
+
 ```bash
 forge script script/DeployAmm.s.sol:DeployAmm --rpc-url $SEPOLIA_RPC_URL --broadcast
 ```
@@ -781,7 +802,7 @@ quoted 5,307,692 shares — 56.5 cents each — and moved the price to `6282`.
 
 | suite | count | command |
 |---|---|---|
-| contracts | 122 | `cd contracts && forge test` |
+| contracts | 134 | `cd contracts && forge test` |
 | frontend | 60 | `cd frontend && bun run test` |
 | workflow | 35 | `cd flight-market/flight-settlement && bun test` |
 

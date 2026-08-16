@@ -2770,6 +2770,35 @@ export const ammMarketAbi = [
     },
     {
       "type": "function",
+      "name": "quoteSell",
+      "inputs": [
+        {
+          "name": "marketId",
+          "type": "uint256",
+          "internalType": "uint256"
+        },
+        {
+          "name": "isYes",
+          "type": "bool",
+          "internalType": "bool"
+        },
+        {
+          "name": "sharesIn",
+          "type": "uint256",
+          "internalType": "uint256"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "",
+          "type": "uint256",
+          "internalType": "uint256"
+        }
+      ],
+      "stateMutability": "view"
+    },
+    {
+      "type": "function",
       "name": "redeem",
       "inputs": [
         {
@@ -2816,6 +2845,40 @@ export const ammMarketAbi = [
         }
       ],
       "outputs": [],
+      "stateMutability": "nonpayable"
+    },
+    {
+      "type": "function",
+      "name": "sell",
+      "inputs": [
+        {
+          "name": "marketId",
+          "type": "uint256",
+          "internalType": "uint256"
+        },
+        {
+          "name": "isYes",
+          "type": "bool",
+          "internalType": "bool"
+        },
+        {
+          "name": "sharesIn",
+          "type": "uint256",
+          "internalType": "uint256"
+        },
+        {
+          "name": "minCollateralOut",
+          "type": "uint256",
+          "internalType": "uint256"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "collateralOut",
+          "type": "uint256",
+          "internalType": "uint256"
+        }
+      ],
       "stateMutability": "nonpayable"
     },
     {
@@ -3093,6 +3156,43 @@ export const ammMarketAbi = [
       "anonymous": false
     },
     {
+      "type": "event",
+      "name": "Sold",
+      "inputs": [
+        {
+          "name": "marketId",
+          "type": "uint256",
+          "indexed": true,
+          "internalType": "uint256"
+        },
+        {
+          "name": "seller",
+          "type": "address",
+          "indexed": true,
+          "internalType": "address"
+        },
+        {
+          "name": "isYes",
+          "type": "bool",
+          "indexed": false,
+          "internalType": "bool"
+        },
+        {
+          "name": "sharesIn",
+          "type": "uint256",
+          "indexed": false,
+          "internalType": "uint256"
+        },
+        {
+          "name": "collateralOut",
+          "type": "uint256",
+          "indexed": false,
+          "internalType": "uint256"
+        }
+      ],
+      "anonymous": false
+    },
+    {
       "type": "error",
       "name": "AlreadyRedeemed",
       "inputs": []
@@ -3184,6 +3284,11 @@ export const ammMarketAbi = [
     {
       "type": "error",
       "name": "NoLiquidity",
+      "inputs": []
+    },
+    {
+      "type": "error",
+      "name": "NotEnoughShares",
       "inputs": []
     },
     {

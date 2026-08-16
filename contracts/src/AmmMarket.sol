@@ -3,6 +3,7 @@ pragma solidity ^0.8.24;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {ReceiverTemplate} from "./interfaces/ReceiverTemplate.sol";
 
 /**
@@ -110,6 +111,13 @@ contract AmmMarket is ReceiverTemplate {
         uint256 sharesOut
     );
     event Settled(uint256 indexed marketId, Outcome outcome, int256 observedValue, bytes32 evidenceHash);
+    event Sold(
+        uint256 indexed marketId,
+        address indexed seller,
+        bool    isYes,
+        uint256 sharesIn,
+        uint256 collateralOut
+    );
     event Redeemed(uint256 indexed marketId, address indexed holder, uint256 amount);
 
     /// @dev Byte-identical to CryptoMarket.SettlementRequested on purpose.
@@ -131,6 +139,7 @@ contract AmmMarket is ReceiverTemplate {
     error NothingToRedeem();
     error AlreadyRedeemed();
     error SlippageTooHigh();
+    error NotEnoughShares();
 
     constructor(IERC20 _token, address _forwarder) ReceiverTemplate(_forwarder) {
         token = _token;
@@ -257,6 +266,78 @@ contract AmmMarket is ReceiverTemplate {
         uint256 noAfter = m.noReserve + collateralIn;
 
         return isYes ? yesAfter - _ceilDiv(k, noAfter) : noAfter - _ceilDiv(k, yesAfter);
+    }
+
+    /**
+     * @notice Sell `sharesIn` shares back to the pool for collateral, reverting
+     *         below `minCollateralOut`.
+     *
+     * The exit that makes a locked price mean something. Without it you can
+     * enter a position and then only wait — which is a bet with extra steps,
+     * not a market.
+     *
+     * A sale is the mirror of a buy: the shares go back into the pool, and
+     * enough COMPLETE SETS are then burned to restore the constant product.
+     * Burning sets is what returns collateral, and it removes one share from
+     * *each* side, which is why both reserves fall by the payout.
+     *
+     * Solving `(Y + s - c)(N - c) = k` for the payout `c` gives
+     *
+     *     c = [ (Y + N + s) - sqrt( (Y + N + s)^2 - 4·s·N ) ] / 2
+     *
+     * with the OPPOSITE reserve inside the discriminant — `N` when selling
+     * YES, `Y` when selling NO.
+     *
+     * THE ROUNDING DIRECTION IS THE WHOLE GAME. `sqrt` must be rounded UP, so
+     * that `c` comes out rounded down and any error is left in the pool. The
+     * first version of this used a floored square root, which inverted that:
+     * checked numerically before any of it was written, the product SHRANK on
+     * every single trade — the pool paying out slightly more than it should,
+     * every time, until it could not pay at all.
+     */
+    function sell(uint256 marketId, bool isYes, uint256 sharesIn, uint256 minCollateralOut)
+        external
+        returns (uint256 collateralOut)
+    {
+        Market storage m = marketData[marketId];
+        if (m.status != Status.Open) revert BadStatus();
+        if (block.timestamp >= m.closeTime) revert TooLate();
+        if (sharesIn == 0) revert NoLiquidity();
+
+        mapping(address => uint256) storage held = isYes ? yesShares[marketId] : noShares[marketId];
+        if (held[msg.sender] < sharesIn) revert NotEnoughShares();
+
+        uint256 k = m.yesReserve * m.noReserve;
+        collateralOut = _sellPayout(m.yesReserve, m.noReserve, sharesIn, isYes);
+        if (collateralOut < minCollateralOut) revert SlippageTooHigh();
+        if (collateralOut == 0) revert SlippageTooHigh();
+
+        uint256 yesAfter = m.yesReserve + (isYes ? sharesIn : 0) - collateralOut;
+        uint256 noAfter = m.noReserve + (isYes ? 0 : sharesIn) - collateralOut;
+
+        // Belt and braces on top of the rounding: the pool may only ever come
+        // out at least as deep as it went in. Cheap, and it turns a subtle
+        // arithmetic slip into a revert rather than a slow drain.
+        if (yesAfter * noAfter < k) revert SlippageTooHigh();
+
+        held[msg.sender] -= sharesIn;
+        m.yesReserve = yesAfter;
+        m.noReserve = noAfter;
+        m.collateral -= collateralOut;
+
+        token.safeTransfer(msg.sender, collateralOut);
+        emit Sold(marketId, msg.sender, isYes, sharesIn, collateralOut);
+    }
+
+    /// @notice Collateral `sharesIn` would fetch right now, without trading.
+    function quoteSell(uint256 marketId, bool isYes, uint256 sharesIn)
+        external
+        view
+        returns (uint256)
+    {
+        Market storage m = marketData[marketId];
+        if (sharesIn == 0) return 0;
+        return _sellPayout(m.yesReserve, m.noReserve, sharesIn, isYes);
     }
 
     // --- settlement --------------------------------------------------------
@@ -416,5 +497,23 @@ contract AmmMarket is ReceiverTemplate {
 
     function _ceilDiv(uint256 a, uint256 b) private pure returns (uint256) {
         return a == 0 ? 0 : (a - 1) / b + 1;
+    }
+
+    /// Closed-form sale payout; see `sell` for the derivation and the rounding.
+    function _sellPayout(uint256 yesReserve, uint256 noReserve, uint256 sharesIn, bool isYes)
+        private
+        pure
+        returns (uint256)
+    {
+        uint256 total = yesReserve + noReserve + sharesIn;
+        uint256 opposite = isYes ? noReserve : yesReserve;
+        uint256 discriminant = total * total - 4 * sharesIn * opposite;
+
+        // Rounded UP, so the payout below rounds down and the pool keeps the
+        // remainder. Rounding this the other way drains the pool on every sale.
+        uint256 root = Math.sqrt(discriminant);
+        if (root * root < discriminant) root += 1;
+
+        return total <= root ? 0 : (total - root) / 2;
     }
 }

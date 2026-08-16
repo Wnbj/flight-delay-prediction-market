@@ -10,8 +10,10 @@ import {
   statusLabel,
 } from "../lib/parimutuel";
 import {
+  quoteAmmSell,
   quoteAmmShares,
   sendAmmBuy,
+  sendAmmSell,
   sendAmmRedeem,
   sendApprove,
   sendClaim,
@@ -75,6 +77,13 @@ export function TradePanel({
   };
 
   const isAmm = market.categoryId === "amm";
+  /**
+   * Buying and selling are the same trade in opposite directions, so they share
+   * the side toggle and the amount box rather than becoming two panels. What
+   * changes is the unit: buying spends collateral, selling spends shares.
+   */
+  const [mode, setMode] = useState<"buy" | "sell">("buy");
+  const heldShares = mode === "sell" ? (side === "yes" ? position?.yes : position?.no) ?? 0n : 0n;
 
   /**
    * The AMM's quote, refreshed as the amount changes.
@@ -90,7 +99,11 @@ export function TradePanel({
       return;
     }
     let cancelled = false;
-    void quoteAmmShares(market, side === "yes", amount)
+    const quoting =
+      mode === "buy"
+        ? quoteAmmShares(market, side === "yes", amount)
+        : quoteAmmSell(market, side === "yes", amount);
+    void quoting
       .then((q) => {
         if (!cancelled) setQuotedShares(q);
       })
@@ -100,7 +113,7 @@ export function TradePanel({
     return () => {
       cancelled = true;
     };
-  }, [isAmm, market, side, amount]);
+  }, [isAmm, market, side, amount, mode]);
 
   const doBuy = async () => {
     if (!account || !amount) return;
@@ -123,6 +136,17 @@ export function TradePanel({
     const fresh = await quoteAmmShares(market, side === "yes", amount);
     const minOut = (fresh * 99n) / 100n;
     await run("staking", (a) => sendAmmBuy(a, market, side === "yes", amount, minOut));
+  };
+
+  const doSell = async () => {
+    if (!account || !amount) return;
+    // Re-quote immediately before submitting, same as buying, and allow 1%
+    // below. Selling needs no approval — the shares are already held by the
+    // contract's own bookkeeping, not by an ERC-20 the pool must be allowed to
+    // move.
+    const fresh = await quoteAmmSell(market, side === "yes", amount);
+    const minOut = (fresh * 99n) / 100n;
+    await run("staking", (a) => sendAmmSell(a, market, side === "yes", amount, minOut));
   };
 
   const doStake = async () => {
@@ -163,6 +187,31 @@ export function TradePanel({
 
       {open ? (
         <>
+          {isAmm && (
+            <div className="seg" style={{ width: "100%" }}>
+              <button
+                className={mode === "buy" ? "active" : ""}
+                style={{ flex: 1 }}
+                onClick={() => setMode("buy")}
+              >
+                Buy
+              </button>
+              <button
+                className={mode === "sell" ? "active" : ""}
+                style={{ flex: 1 }}
+                onClick={() => setMode("sell")}
+                disabled={!position || (position.yes === 0n && position.no === 0n)}
+                title={
+                  position && (position.yes > 0n || position.no > 0n)
+                    ? "Exit your position before expiry"
+                    : "Nothing to sell yet"
+                }
+              >
+                Sell
+              </button>
+            </div>
+          )}
+
           <div className="seg" style={{ width: "100%" }}>
             <button
               className={side === "yes" ? "active" : ""}
@@ -189,7 +238,7 @@ export function TradePanel({
                 color: "color-mix(in srgb, var(--color-text) 70%, transparent)",
               }}
             >
-              Amount ({TOKEN_SYMBOL})
+              {isAmm && mode === "sell" ? "Shares to sell" : `Amount (${TOKEN_SYMBOL})`}
             </label>
             <input
               type="text"
@@ -202,7 +251,11 @@ export function TradePanel({
               className="muted-strong"
               style={{ fontSize: 11, marginTop: 4, display: "flex", justifyContent: "space-between" }}
             >
-              <span>Balance {formatToken(balance)}</span>
+              <span>
+                {isAmm && mode === "sell"
+                  ? `Holding ${formatToken(heldShares)} ${side === "yes" ? "Yes" : "No"}`
+                  : `Balance ${formatToken(balance)}`}
+              </span>
               <button
                 onClick={() => void run("minting", (a) => sendMint(a, 100_000_000n))}
                 disabled={busy !== null}
@@ -227,7 +280,7 @@ export function TradePanel({
                 className="muted-strong"
                 style={{ display: "flex", justifyContent: "space-between", fontSize: 11 }}
               >
-                <span>Shares</span>
+                <span>{mode === "buy" ? "Shares" : "You receive"}</span>
                 <span style={{ color: "var(--color-text)" }}>
                   {quotedShares === null ? "—" : formatToken(quotedShares)}
                 </span>
@@ -239,19 +292,23 @@ export function TradePanel({
                 <span>Price per share</span>
                 <span style={{ color: "var(--color-text)" }}>
                   {quotedShares && quotedShares > 0n && amount
-                    ? `${(Number((amount * 10_000n) / quotedShares) / 100).toFixed(1)}¢`
+                    ? mode === "buy"
+                      ? `${(Number((amount * 10_000n) / quotedShares) / 100).toFixed(1)}¢`
+                      : `${(Number((quotedShares * 10_000n) / amount) / 100).toFixed(1)}¢`
                     : "—"}
                 </span>
               </div>
-              <div
-                className="muted-strong"
-                style={{ display: "flex", justifyContent: "space-between", fontSize: 11 }}
-              >
-                <span>Payout if {side === "yes" ? "Yes" : "No"}</span>
-                <span style={{ color: "var(--color-text)" }}>
-                  {quotedShares === null ? "—" : formatToken(quotedShares)}
-                </span>
-              </div>
+              {mode === "buy" && (
+                <div
+                  className="muted-strong"
+                  style={{ display: "flex", justifyContent: "space-between", fontSize: 11 }}
+                >
+                  <span>Payout if {side === "yes" ? "Yes" : "No"}</span>
+                  <span style={{ color: "var(--color-text)" }}>
+                    {quotedShares === null ? "—" : formatToken(quotedShares)}
+                  </span>
+                </div>
+              )}
             </>
           ) : (
             <div
@@ -274,35 +331,54 @@ export function TradePanel({
 
           <p className="muted-strong" style={{ fontSize: 11, margin: 0 }}>
             {isAmm
-              ? "Each share pays 1 mUSDC if you are right. The price is locked when you buy — later trades cannot change what you already hold. Submitted with a 1% slippage bound."
+              ? mode === "buy"
+                ? "Each share pays 1 mUSDC if you are right. The price is locked when you buy — later trades cannot change what you already hold. Submitted with a 1% slippage bound."
+                : "Selling returns your shares to the pool at the current price, so you can take a profit or cut a loss without waiting for expiry. Submitted with a 1% slippage bound."
               : "Parimutuel: your share of the whole pot is fixed at settlement, so this estimate moves as others stake."}
           </p>
 
-          {insufficient && (
+          {isAmm && mode === "sell" && amount !== null && amount > heldShares ? (
             <div style={{ fontSize: 12, color: "var(--color-negative)" }}>
-              Not enough {TOKEN_SYMBOL}.
+              You only hold {formatToken(heldShares)} {side === "yes" ? "Yes" : "No"} shares.
             </div>
+          ) : (
+            insufficient &&
+            !(isAmm && mode === "sell") && (
+              <div style={{ fontSize: 12, color: "var(--color-negative)" }}>
+                Not enough {TOKEN_SYMBOL}.
+              </div>
+            )
           )}
 
           <button
             className="btn btn-accent"
             style={{ width: "100%" }}
-            disabled={!amount || amount <= 0n || insufficient || busy !== null || wallet.wrongNetwork}
-            onClick={() => void (isAmm ? doBuy() : doStake())}
+            disabled={
+              !amount ||
+              amount <= 0n ||
+              busy !== null ||
+              wallet.wrongNetwork ||
+              (isAmm && mode === "sell" ? amount > heldShares : insufficient)
+            }
+            onClick={() => void (isAmm ? (mode === "sell" ? doSell() : doBuy()) : doStake())}
           >
             {busy === "approving"
               ? "Approving…"
               : busy === "staking"
                 ? isAmm
-                  ? "Buying…"
+                  ? mode === "sell"
+                    ? "Selling…"
+                    : "Buying…"
                   : "Staking…"
-                : needsApproval
-                  ? isAmm
-                    ? "Approve & buy"
-                    : "Approve & stake"
-                  : isAmm
-                    ? "Buy shares"
-                    : "Place stake"}
+                : isAmm && mode === "sell"
+                  ? "Sell shares"
+                  : needsApproval
+                    ? isAmm
+                      ? "Approve & buy"
+                      : "Approve & stake"
+                    : isAmm
+                      ? "Buy shares"
+                      : "Place stake"}
           </button>
         </>
       ) : (

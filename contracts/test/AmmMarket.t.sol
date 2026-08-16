@@ -310,6 +310,127 @@ contract AmmMarketTest is Test {
         assertEq(token.balanceOf(address(market)), 0);
     }
 
+    // --- selling: the exit that makes a locked price mean something ---------
+
+    /**
+     * Buy and immediately sell back. You must never get more than you paid —
+     * that would be free money minted from rounding, and the pool would drain
+     * a little on every round trip until it could not pay a claim.
+     */
+    function test_roundTripNeverReturnsMoreThanWasPaid() public {
+        uint256 id = _newMarket();
+        uint256 paid = 100e6;
+        uint256 shares = _buy(id, alice, true, paid);
+
+        uint256 before = token.balanceOf(alice);
+        vm.prank(alice);
+        uint256 back = market.sell(id, true, shares, 0);
+
+        assertLe(back, paid, "round trip returned more than it cost");
+        assertEq(token.balanceOf(alice) - before, back);
+    }
+
+    /// Selling into a position you are up on realises the gain before expiry.
+    function test_sellRealisesAGainWithoutWaitingForSettlement() public {
+        uint256 id = _newMarket();
+        uint256 shares = _buy(id, alice, true, 100e6);
+
+        // The market moves alice's way — someone else buys the same side.
+        _buy(id, bob, true, 600e6);
+
+        vm.prank(alice);
+        uint256 back = market.sell(id, true, shares, 0);
+        assertGt(back, 100e6, "should be able to take a profit early");
+    }
+
+    /// And selling out of a losing position cuts it, rather than riding to zero.
+    function test_sellCutsALosingPositionEarly() public {
+        uint256 id = _newMarket();
+        uint256 shares = _buy(id, alice, true, 100e6);
+
+        // The market moves against alice.
+        _buy(id, bob, false, 600e6);
+
+        vm.prank(alice);
+        uint256 back = market.sell(id, true, shares, 0);
+        assertLt(back, 100e6, "a losing exit should return less than was paid");
+        assertGt(back, 0, "but something, not nothing");
+    }
+
+    function test_sellMovesThePriceBack() public {
+        uint256 id = _newMarket();
+        uint256 shares = _buy(id, alice, true, 300e6);
+        uint256 peak = market.yesPriceBps(id);
+
+        vm.prank(alice);
+        market.sell(id, true, shares, 0);
+
+        assertLt(market.yesPriceBps(id), peak, "selling YES must lower the YES price");
+    }
+
+    function test_quoteSellMatchesWhatSellGives() public {
+        uint256 id = _newMarket();
+        uint256 shares = _buy(id, alice, true, 250e6);
+
+        uint256 quoted = market.quoteSell(id, true, shares);
+        vm.prank(alice);
+        assertEq(market.sell(id, true, shares, 0), quoted);
+    }
+
+    function test_sell_respectsSlippageBound() public {
+        uint256 id = _newMarket();
+        uint256 shares = _buy(id, alice, true, 100e6);
+        uint256 quoted = market.quoteSell(id, true, shares);
+
+        vm.prank(alice);
+        vm.expectRevert(AmmMarket.SlippageTooHigh.selector);
+        market.sell(id, true, shares, quoted + 1);
+    }
+
+    function test_sell_rejectsMoreSharesThanHeld() public {
+        uint256 id = _newMarket();
+        uint256 shares = _buy(id, alice, true, 50e6);
+
+        vm.prank(alice);
+        vm.expectRevert(AmmMarket.NotEnoughShares.selector);
+        market.sell(id, true, shares + 1, 0);
+    }
+
+    function test_sell_rejectedOnSomeoneElsesShares() public {
+        uint256 id = _newMarket();
+        _buy(id, alice, true, 50e6);
+
+        vm.prank(bob);
+        vm.expectRevert(AmmMarket.NotEnoughShares.selector);
+        market.sell(id, true, 1e6, 0);
+    }
+
+    function test_sell_rejectedAfterTradingCloses() public {
+        uint256 id = _newMarket();
+        uint256 shares = _buy(id, alice, true, 50e6);
+
+        vm.warp(closeTime);
+        vm.prank(alice);
+        vm.expectRevert(AmmMarket.TooLate.selector);
+        market.sell(id, true, shares, 0);
+    }
+
+    /// Selling burns complete sets, so the collateral figure has to fall with it.
+    function test_sellKeepsEverythingCollateralised() public {
+        uint256 id = _newMarket();
+        uint256 shares = _buy(id, alice, true, 400e6);
+        _buy(id, bob, false, 150e6);
+        _assertFullyCollateralised(id, _holders());
+
+        vm.prank(alice);
+        market.sell(id, true, shares / 2, 0);
+        _assertFullyCollateralised(id, _holders());
+
+        vm.prank(alice);
+        market.sell(id, true, shares / 2, 0);
+        _assertFullyCollateralised(id, _holders());
+    }
+
     // --- lifecycle guards ---------------------------------------------------
 
     function test_buy_rejectedAtCloseTime() public {
@@ -379,6 +500,49 @@ contract AmmMarketTest is Test {
     }
 
     // --- fuzz ---------------------------------------------------------------
+
+    /**
+     * The rounding direction, fuzzed. A sale may never leave the pool shallower
+     * than it found it — get this backwards and the pool pays out slightly too
+     * much on every single trade.
+     */
+    function testFuzz_sellNeverShrinksTheProduct(uint96 buyAmount, uint8 sellPct, bool isYes)
+        public
+    {
+        vm.assume(buyAmount > 1e6 && buyAmount < 50_000e6);
+
+        uint256 id = _newMarket();
+        uint256 shares = _buy(id, alice, isYes, buyAmount);
+        uint256 toSell = (shares * (uint256(sellPct) % 100 + 1)) / 100;
+        vm.assume(toSell > 0);
+
+        (uint256 y0, uint256 n0,) = _pool(id);
+        uint256 kBefore = y0 * n0;
+
+        vm.prank(alice);
+        market.sell(id, isYes, toSell, 0);
+
+        (uint256 y1, uint256 n1,) = _pool(id);
+        assertGe(y1 * n1, kBefore, "a sale must never drain the pool");
+        _assertFullyCollateralised(id, _holders());
+    }
+
+    /**
+     * No sequence of trades may mint value out of nothing: whatever alice ends
+     * up holding plus whatever she sold back must never exceed what she put in,
+     * as long as the market has not moved in her favour in between.
+     */
+    function testFuzz_roundTripIsNeverProfitableOnItsOwn(uint96 amount, bool isYes) public {
+        vm.assume(amount > 1e6 && amount < 50_000e6);
+
+        uint256 id = _newMarket();
+        uint256 shares = _buy(id, alice, isYes, amount);
+
+        vm.prank(alice);
+        uint256 back = market.sell(id, isYes, shares, 0);
+
+        assertLe(back, amount, "buying and selling back created money");
+    }
 
     /**
      * Solvency under arbitrary trading. Any sequence of buys on either side

@@ -2,6 +2,13 @@ import { describe, expect, it } from "vitest";
 import { contractFor, marketKey } from "./chain";
 import { buildPath, parse } from "./router";
 import { CATEGORIES, LIVE_CATEGORIES } from "./categories";
+import {
+  AMM_MARKET_ADDRESS,
+  CRYPTO_MARKET_ADDRESS,
+  MARKET_ADDRESS,
+  RESERVE_MARKET_ADDRESS,
+  STOCK_MARKET_ADDRESS,
+} from "./config";
 import { MarketStatus, Outcome, type Market } from "./types";
 
 /**
@@ -17,6 +24,11 @@ import { MarketStatus, Outcome, type Market } from "./types";
  *
  * Nothing here needs a chain or a wallet — it is all pure routing logic, which
  * is exactly why leaving it untested was indefensible.
+ *
+ * Addresses come from config rather than being written out here. The property
+ * under test is that each category reaches its OWN contract, not that any
+ * particular string was deployed — pinning the literals made a redeploy break
+ * these tests for no reason that mattered.
  */
 
 const base = {
@@ -34,7 +46,7 @@ export const flight0: Market = {
   ...base,
   id: 0,
   key: marketKey("flights", 0),
-  contract: "0x09068efb21fabeac59694e01428cf438cf38e2b3",
+  contract: MARKET_ADDRESS,
   categoryId: "flights",
   question: "Will AA100 arrive 30m+ late?",
   flightIata: "AA100",
@@ -47,7 +59,7 @@ export const crypto0: Market = {
   ...base,
   id: 0,
   key: marketKey("crypto", 0),
-  contract: "0x8DA11eb17D5F3f4427aA3017E95e50b132A210be",
+  contract: CRYPTO_MARKET_ADDRESS,
   categoryId: "crypto",
   question: "Will BTC be at or above $63,000?",
   asset: "BTC",
@@ -60,7 +72,7 @@ export const stock0: Market = {
   ...base,
   id: 0,
   key: marketKey("stocks", 0),
-  contract: "0x451bcdB90EC6f6F5f40B5B2578aef641e36b71ca",
+  contract: STOCK_MARKET_ADDRESS,
   categoryId: "stocks",
   question: "Will CSPX be at or above $840?",
   symbol: "CSPX",
@@ -75,7 +87,7 @@ export const reserve0: Market = {
   ...base,
   id: 0,
   key: marketKey("reserves", 0),
-  contract: "0xa768Be2741A0464b81606649eCa45bfF7aD4d939",
+  contract: RESERVE_MARKET_ADDRESS,
   categoryId: "reserves",
   question: "Will stETH reserves be at or above 9,000,000?",
   symbol: "STETH",
@@ -90,7 +102,7 @@ export const amm0: Market = {
   ...base,
   id: 0,
   key: marketKey("amm", 0),
-  contract: "0xdc866C24Af158E55C1c424dc81d69f9F668dF27a",
+  contract: AMM_MARKET_ADDRESS,
   categoryId: "amm",
   question: "AMM: will BTC be at or above $63,000?",
   asset: "BTC",

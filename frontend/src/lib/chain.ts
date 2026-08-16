@@ -720,6 +720,29 @@ const ammWriteAbi = [
   },
   {
     type: "function",
+    name: "sell",
+    inputs: [
+      { name: "marketId", type: "uint256" },
+      { name: "isYes", type: "bool" },
+      { name: "sharesIn", type: "uint256" },
+      { name: "minCollateralOut", type: "uint256" },
+    ],
+    outputs: [{ name: "", type: "uint256" }],
+    stateMutability: "nonpayable",
+  },
+  {
+    type: "function",
+    name: "quoteSell",
+    inputs: [
+      { name: "marketId", type: "uint256" },
+      { name: "isYes", type: "bool" },
+      { name: "sharesIn", type: "uint256" },
+    ],
+    outputs: [{ name: "", type: "uint256" }],
+    stateMutability: "view",
+  },
+  {
+    type: "function",
     name: "redeem",
     inputs: [{ name: "marketId", type: "uint256" }],
     outputs: [],
@@ -741,6 +764,7 @@ const ammWriteAbi = [
   { type: "error", name: "BadStatus", inputs: [] },
   { type: "error", name: "NothingToRedeem", inputs: [] },
   { type: "error", name: "AlreadyRedeemed", inputs: [] },
+  { type: "error", name: "NotEnoughShares", inputs: [] },
 ] as const;
 
 /** Shares `collateralIn` buys right now — the exact number `buy` will return. */
@@ -778,6 +802,40 @@ export async function sendAmmBuy(
     abi: ammWriteAbi,
     functionName: "buy",
     args: [BigInt(market.id), isYes, collateralIn, minSharesOut] as const,
+    chain,
+    account,
+  });
+}
+
+/** Collateral `sharesIn` fetches right now — what `sell` will actually pay. */
+export async function quoteAmmSell(
+  market: Market,
+  isYes: boolean,
+  sharesIn: bigint,
+): Promise<bigint> {
+  if (market.categoryId !== "amm" || sharesIn <= 0n) return 0n;
+  return (await publicClient.readContract({
+    address: market.contract,
+    abi: ammWriteAbi,
+    functionName: "quoteSell",
+    args: [BigInt(market.id), isYes, sharesIn],
+  })) as bigint;
+}
+
+/** Sell shares back to the pool — the exit that makes a locked price useful. */
+export async function sendAmmSell(
+  account: Address,
+  market: Market,
+  isYes: boolean,
+  sharesIn: bigint,
+  minCollateralOut: bigint,
+) {
+  const wallet = walletClientFor(account);
+  return wallet.writeContract({
+    address: market.contract,
+    abi: ammWriteAbi,
+    functionName: "sell",
+    args: [BigInt(market.id), isYes, sharesIn, minCollateralOut] as const,
     chain,
     account,
   });
