@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Nav } from "./components/Nav";
 import { SpotProvider } from "./hooks/useSpot";
 import { useWallet } from "./hooks/useWallet";
@@ -11,6 +11,7 @@ import { Portfolio } from "./views/Portfolio";
 import { Leaderboard } from "./views/Leaderboard";
 import type { View } from "./lib/view";
 import { MarketStatus } from "./lib/types";
+import { eventKeyFor } from "./lib/events";
 
 export default function App() {
   const wallet = useWallet();
@@ -26,9 +27,6 @@ export default function App() {
     return () => clearInterval(t);
   }, []);
 
-  useEffect(() => {
-    window.scrollTo({ top: 0 });
-  }, [view, selectedKey]);
 
   // Real navigation (switching views, opening a market) pushes a history
   // entry, so the browser's Back button steps back through the app instead
@@ -42,6 +40,50 @@ export default function App() {
   };
 
   const selected = data.markets.find((m) => m.key === selectedKey) ?? null;
+
+  /**
+   * Scroll to the top on navigation — except when moving between rungs of the
+   * same strike ladder.
+   *
+   * Those are the same question at a different strike, so the reader is
+   * comparing, not arriving: throwing them back to the top loses the ladder
+   * they were just reading. Opening a genuinely different market still jumps,
+   * because that IS new content.
+   *
+   * The subtlety is that the route arrives before the data does. On a cold
+   * load the effect first runs while markets are still being fetched, so the
+   * selected market — and with it the ladder it belongs to — is not known yet.
+   * Recording that as "no ladder" made the very next rung click look like a
+   * fresh navigation and jump to the top, once, only after a page load. So the
+   * ladder is recorded whenever it becomes known, and only a change of ROUTE
+   * decides whether to scroll.
+   */
+  const routeId = `${view}:${selectedKey ?? ""}`;
+  const eventKey = selected ? eventKeyFor(selected) : null;
+  const lastRoute = useRef<{ routeId: string; view: View; eventKey: string | null }>({
+    routeId,
+    view,
+    eventKey: null,
+  });
+
+  useEffect(() => {
+    const previous = lastRoute.current;
+
+    if (previous.routeId === routeId) {
+      // Same route, data caught up. Remember the ladder; do not touch scroll.
+      lastRoute.current = { routeId, view, eventKey: eventKey ?? previous.eventKey };
+      return;
+    }
+
+    const sameLadder =
+      view === "detail" &&
+      previous.view === "detail" &&
+      eventKey !== null &&
+      eventKey === previous.eventKey;
+
+    if (!sameLadder) window.scrollTo({ top: 0 });
+    lastRoute.current = { routeId, view, eventKey };
+  }, [routeId, eventKey, view]);
 
   // Only poll for assets that still have an unresolved market — a settled
   // market shows the price the oracle used, not a live one.

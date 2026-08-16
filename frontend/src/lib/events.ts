@@ -28,7 +28,13 @@ export function isLadder(event: MarketEvent): boolean {
   return event.rungs.length > 1;
 }
 
-function eventKeyFor(m: Market): string | null {
+/**
+ * The event a market belongs to, or null if it cannot belong to one.
+ *
+ * Exported because navigation needs it too: switching strikes within one
+ * ladder is a lateral move, not opening new content.
+ */
+export function eventKeyFor(m: Market): string | null {
   if (!isPriceMarket(m)) return null;
   const asset = m.categoryId === "crypto" || m.categoryId === "amm" ? m.asset : m.symbol;
   return `${m.categoryId}:${m.contract}:${asset}:${m.expiryTime}`;
