@@ -28,6 +28,7 @@ import { PriceChart } from "../components/PriceChart";
 import { MarketCard } from "../components/MarketCard";
 import { TradePanel } from "../components/TradePanel";
 import { LiquidityPanel } from "../components/LiquidityPanel";
+import { Stat } from "../components/Stat";
 import type { WalletState } from "../hooks/useWallet";
 
 type Tab = "overview" | "activity" | "rules";
@@ -522,18 +523,3 @@ export function Detail({
   );
 }
 
-function Stat({ label, value }: { label: string; value: string }) {
-  return (
-    <div>
-      <div
-        className="muted"
-        style={{ fontSize: 11, textTransform: "uppercase", letterSpacing: "0.06em" }}
-      >
-        {label}
-      </div>
-      <div className="heading" style={{ fontSize: 18 }}>
-        {value}
-      </div>
-    </div>
-  );
-}

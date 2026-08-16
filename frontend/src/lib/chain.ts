@@ -782,7 +782,7 @@ export async function readLpEvents(): Promise<LpEvent[]> {
 export async function readSettledEvents(): Promise<SettledEvent[]> {
   // The stock contract inherits the same base as the crypto one, so it emits
   // the identical int256 Settled event.
-  const [flightLogs, cryptoLogs, stockLogs, ammLogs] = await Promise.all([
+  const [flightLogs, cryptoLogs, stockLogs, ammLogs, reserveLogs] = await Promise.all([
     logsInChunks((fromBlock, toBlock) =>
       publicClient.getLogs({
         address: FLIGHT_MARKET_ADDRESS,
@@ -818,6 +818,17 @@ export async function readSettledEvents(): Promise<SettledEvent[]> {
         toBlock,
       }),
     ),
+    // Reserves, for the same reason and with the same symptom. Four contracts
+    // emit this identical event and each needed its own line here, which is
+    // precisely the shape of thing that gets forgotten twice.
+    logsInChunks((fromBlock, toBlock) =>
+      publicClient.getLogs({
+        address: RESERVE_MARKET_ADDRESS,
+        event: CRYPTO_SETTLED_EVENT,
+        fromBlock,
+        toBlock,
+      }),
+    ),
   ]);
 
   return [
@@ -826,6 +837,7 @@ export async function readSettledEvents(): Promise<SettledEvent[]> {
       outcome: Number(l.args.outcome!) as Outcome,
       observedValue: BigInt(l.args.observedDelay!),
       evidenceHash: l.args.evidenceHash!,
+      blockNumber: l.blockNumber!,
       txHash: l.transactionHash!,
     })),
     ...cryptoLogs.map((l) => ({
@@ -833,6 +845,7 @@ export async function readSettledEvents(): Promise<SettledEvent[]> {
       outcome: Number(l.args.outcome!) as Outcome,
       observedValue: l.args.observedValue!,
       evidenceHash: l.args.evidenceHash!,
+      blockNumber: l.blockNumber!,
       txHash: l.transactionHash!,
     })),
     ...stockLogs.map((l) => ({
@@ -840,6 +853,7 @@ export async function readSettledEvents(): Promise<SettledEvent[]> {
       outcome: Number(l.args.outcome!) as Outcome,
       observedValue: l.args.observedValue!,
       evidenceHash: l.args.evidenceHash!,
+      blockNumber: l.blockNumber!,
       txHash: l.transactionHash!,
     })),
     ...ammLogs.map((l) => ({
@@ -847,6 +861,15 @@ export async function readSettledEvents(): Promise<SettledEvent[]> {
       outcome: Number(l.args.outcome!) as Outcome,
       observedValue: l.args.observedValue!,
       evidenceHash: l.args.evidenceHash!,
+      blockNumber: l.blockNumber!,
+      txHash: l.transactionHash!,
+    })),
+    ...reserveLogs.map((l) => ({
+      marketKey: marketKey("reserves", Number(l.args.marketId!)),
+      outcome: Number(l.args.outcome!) as Outcome,
+      observedValue: l.args.observedValue!,
+      evidenceHash: l.args.evidenceHash!,
+      blockNumber: l.blockNumber!,
       txHash: l.transactionHash!,
     })),
   ];

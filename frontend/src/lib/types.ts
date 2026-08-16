@@ -236,6 +236,13 @@ export interface SettledEvent {
   /** Minutes late for flights, price at 8 decimals for crypto. */
   observedValue: bigint;
   evidenceHash: `0x${string}`;
+  /**
+   * Carried like every other event type here. It was dropped originally
+   * because the settlement card only needed the transaction — but without it a
+   * settlement cannot be placed in time relative to anything else, which is
+   * exactly what a lifecycle view is.
+   */
+  blockNumber: bigint;
   txHash: `0x${string}`;
 }
 
