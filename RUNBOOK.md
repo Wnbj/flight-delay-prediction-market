@@ -94,8 +94,8 @@ print([tx['hash'] for tx in d['transactions'] if tx['function'] == 'requestSettl
 ## 4. Simulate the workflow, with a real on-chain write
 
 ```bash
-cd flight-market
-cre workflow simulate ./flight-settlement --target staging-settings --broadcast \
+cd cre
+cre workflow simulate ./settlement --target staging-settings --broadcast \
   --trigger-index 0 --evm-tx-hash <hash> --evm-event-index 0 --non-interactive
 ```
 
@@ -126,7 +126,7 @@ doc.aerodatabox.com, not guessed — see the comment above `fetchFlight` in
 
 1. Sign up at RapidAPI and subscribe to AeroDataBox
    (https://rapidapi.com/aedbx-aedbx/api/aerodatabox) — free tier exists.
-2. `cp flight-market/flight-settlement/config.staging.example.json flight-market/flight-settlement/config.staging.json`
+2. `cp cre/settlement/config.staging.example.json cre/settlement/config.staging.json`
 3. Fill in `apiKey` with your RapidAPI key.
 
 `config.staging.json` is **gitignored**, not committed — same treatment as
@@ -333,7 +333,7 @@ on the forwarder — not from CLI output.
 forge script script/CreateCryptoMarkets.s.sol:CreateCryptoMarkets \
   --rpc-url $SEPOLIA_RPC_URL --broadcast
 # then, once SETTLEABLE_AT passes, requestSettlement and:
-cre workflow simulate ./flight-settlement --target staging-settings --broadcast \
+cre workflow simulate ./settlement --target staging-settings --broadcast \
   --trigger-index 1 --evm-tx-hash <hash> --evm-event-index 0 --non-interactive
 ```
 
@@ -478,7 +478,7 @@ symbol, and that symbol is what labels the market in the UI.
 forge script script/DeployStock.s.sol:DeployStock \
   --rpc-url $SEPOLIA_RPC_URL --broadcast
 # then, once settleAfter passes, requestSettlement and:
-cre workflow simulate ./flight-settlement --target staging-settings --broadcast \
+cre workflow simulate ./settlement --target staging-settings --broadcast \
   --trigger-index 2 --evm-tx-hash <hash> --evm-event-index 0 --non-interactive
 ```
 
@@ -532,7 +532,7 @@ the log handlers call — so a market settled by the sweep can never resolve
 differently from one settled by the trigger.
 
 ```bash
-cre workflow simulate ./flight-settlement --target staging-settings --broadcast \
+cre workflow simulate ./settlement --target staging-settings --broadcast \
   --trigger-index 3 --non-interactive
 ```
 
@@ -873,7 +873,7 @@ there is no event title on chain.
 |---|---|---|
 | contracts | 140 | `cd contracts && forge test` |
 | frontend | 97 | `cd frontend && bun run test` |
-| workflow | 35 | `cd flight-market/flight-settlement && bun test` |
+| workflow | 35 | `cd cre/settlement && bun test` |
 
 The frontend and workflow suites were added after a routing bug reached a
 user: writes branched on `categoryId` with the flight contract as the else, so

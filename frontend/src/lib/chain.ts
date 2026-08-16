@@ -12,7 +12,7 @@ import {
   chain,
   CRYPTO_MARKET_ADDRESS,
   DEPLOY_BLOCK,
-  MARKET_ADDRESS,
+  FLIGHT_MARKET_ADDRESS,
   RESERVE_MARKET_ADDRESS,
   RPC_URL,
   STOCK_MARKET_ADDRESS,
@@ -50,7 +50,7 @@ export function walletClientFor(account: Address) {
   return createWalletClient({ account, chain, transport: custom(provider) });
 }
 
-const marketContract = { address: MARKET_ADDRESS, abi: flightMarketAbi } as const;
+const marketContract = { address: FLIGHT_MARKET_ADDRESS, abi: flightMarketAbi } as const;
 const cryptoContract = { address: CRYPTO_MARKET_ADDRESS, abi: cryptoMarketAbi } as const;
 const stockContract = { address: STOCK_MARKET_ADDRESS, abi: stockMarketAbi } as const;
 const reserveContract = { address: RESERVE_MARKET_ADDRESS, abi: reserveMarketAbi } as const;
@@ -102,7 +102,7 @@ async function readFlightMarkets(): Promise<Market[]> {
     return {
       id: i,
       key: marketKey("flights", i),
-      contract: MARKET_ADDRESS,
+      contract: FLIGHT_MARKET_ADDRESS,
       categoryId: "flights",
       question: t[0],
       flightIata: t[1],
@@ -597,7 +597,7 @@ export async function readStakeEvents(): Promise<StakeEvent[]> {
   };
 
   const [flights, crypto, stocks, reserves, amm] = await Promise.all([
-    read(MARKET_ADDRESS, "flights"),
+    read(FLIGHT_MARKET_ADDRESS, "flights"),
     read(CRYPTO_MARKET_ADDRESS, "crypto"),
     read(STOCK_MARKET_ADDRESS, "stocks"),
     read(RESERVE_MARKET_ADDRESS, "reserves"),
@@ -616,7 +616,7 @@ export async function readSettledEvents(): Promise<SettledEvent[]> {
   const [flightLogs, cryptoLogs, stockLogs] = await Promise.all([
     logsInChunks((fromBlock, toBlock) =>
       publicClient.getLogs({
-        address: MARKET_ADDRESS,
+        address: FLIGHT_MARKET_ADDRESS,
         event: FLIGHT_SETTLED_EVENT,
         fromBlock,
         toBlock,

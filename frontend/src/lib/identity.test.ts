@@ -5,7 +5,7 @@ import { CATEGORIES, LIVE_CATEGORIES } from "./categories";
 import {
   AMM_MARKET_ADDRESS,
   CRYPTO_MARKET_ADDRESS,
-  MARKET_ADDRESS,
+  FLIGHT_MARKET_ADDRESS,
   RESERVE_MARKET_ADDRESS,
   STOCK_MARKET_ADDRESS,
 } from "./config";
@@ -46,7 +46,7 @@ export const flight0: Market = {
   ...base,
   id: 0,
   key: marketKey("flights", 0),
-  contract: MARKET_ADDRESS,
+  contract: FLIGHT_MARKET_ADDRESS,
   categoryId: "flights",
   question: "Will AA100 arrive 30m+ late?",
   flightIata: "AA100",

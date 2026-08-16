@@ -48,7 +48,7 @@ import { z } from "zod"
  */
 
 export type Config = {
-  contractAddress: string
+  flightContractAddress: string
   chainSelectorName: string
   apiUrl: string          // AeroDataBox base URL, e.g. https://aerodatabox.p.rapidapi.com
   /**
@@ -931,7 +931,7 @@ const settleFlightMarket = (runtime: Runtime<Config>, t: FlightTerms): string =>
 
   const txResult = evmClient
     .writeReport(runtime, {
-      receiver: runtime.config.contractAddress,
+      receiver: runtime.config.flightContractAddress,
       report: signedReport,
       gasConfig: { gasLimit: runtime.config.gasLimit },
     })
@@ -1530,7 +1530,7 @@ export const onSweepFlights = (runtime: Runtime<Config>): string => {
   const evmClient = sweepEvm(runtime)
   const reads = newReadBudget()
   const atBlock = finalizedBlock(runtime, evmClient, reads)
-  const address = runtime.config.contractAddress
+  const address = runtime.config.flightContractAddress
 
   const count = readMarketCount(runtime, evmClient, address, atBlock, reads)
   let settled = 0
@@ -1867,7 +1867,7 @@ export const initWorkflow = (config: Config) => {
       // topics[0] = event signature; no filter on the indexed marketId.
       evmClient.logTrigger(
         logTriggerConfig({
-          addresses: [config.contractAddress as `0x${string}`],
+          addresses: [config.flightContractAddress as `0x${string}`],
           topics: [[SETTLEMENT_REQUESTED_TOPIC]],
           confidence: "LATEST",
         }),

@@ -10,7 +10,7 @@
 node_modules/
 
 # CRE build artifacts
-flight-market/**/.cre_build_tmp.js
+cre/**/.cre_build_tmp.js
 
 # Foundry — regenerable via `forge install` / `forge build`
 contracts/lib/
@@ -22,4 +22,4 @@ frontend/dist/
 
 # CRE workflow config — holds the AeroDataBox API key locally.
 # Copy config.staging.example.json to config.staging.json and fill it in.
-flight-market/flight-settlement/config.staging.json
+cre/settlement/config.staging.json

@@ -170,7 +170,7 @@ export PATH="$HOME/.local/share/cre/bin:$HOME/.bun/bin:$HOME/.foundry/bin:$PATH"
 cd contracts && forge test                     # 140 tests
 cd frontend  && bun install && bun run test    # 97 tests
 cd frontend  && bun run dev                    # the app, against live Sepolia
-cd flight-market/flight-settlement && bun test # 35 tests
+cd cre/settlement && bun test # 35 tests
 ```
 
 Settling a market end to end, deploying the contracts, and every operational
@@ -207,3 +207,23 @@ have them.
   deployed with live positions, so the parimutuel logic exists in two places
   until it is next redeployed.
 - Not audited. Not for real money.
+
+---
+
+## A note on names
+
+`cre/settlement/` used to be `flight-market/flight-settlement/`, from when
+flights were the only category. The directories are renamed; the **workflow
+name is not**, and deliberately.
+
+`workflow-name: "flight-settlement-staging"` is not a label. Its
+`bytes10(keccak256(...))` is stored in every deployed contract and checked on
+every report, so renaming it makes all five contracts reject every settlement —
+silently, because the forwarder swallows a failed receiver call into an event
+rather than reverting. It can be changed with five owner calls to
+`setExpectedWorkflowName`, and will be whenever the contracts are next
+redeployed. Doing it for tidiness alone would risk the one failure mode in this
+system that is hardest to see.
+
+The repository URL is likewise unchanged while the deploy-access request that
+cites it is still open.
