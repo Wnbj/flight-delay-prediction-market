@@ -26,7 +26,7 @@ export interface RouteState {
 
 const LANDING: RouteState = { view: "landing", selectedKey: null, categoryFilter: "all" };
 
-function parse(pathname: string, search: string): RouteState {
+export function parse(pathname: string, search: string): RouteState {
   const category = (new URLSearchParams(search).get("category") ?? "all") as CategoryId | "all";
 
   if (pathname === "/") return LANDING;
@@ -49,7 +49,7 @@ function parse(pathname: string, search: string): RouteState {
   return LANDING;
 }
 
-function buildPath(state: RouteState): string {
+export function buildPath(state: RouteState): string {
   switch (state.view) {
     case "landing":
       return "/";

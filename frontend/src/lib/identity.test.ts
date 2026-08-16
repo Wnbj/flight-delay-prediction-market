@@ -1,0 +1,156 @@
+import { describe, expect, it } from "vitest";
+import { contractFor, marketKey } from "./chain";
+import { buildPath, parse } from "./router";
+import { CATEGORIES, LIVE_CATEGORIES } from "./categories";
+import { MarketStatus, Outcome, type Market } from "./types";
+
+/**
+ * The identity layer: which contract a market belongs to, and how a market is
+ * named across the app.
+ *
+ * This file exists because of a real bug. `sendStake` branched on
+ * `categoryId === "crypto"` with the flight contract as the else, so when a
+ * third category arrived every stock write was delivered to FlightMarket. Ids
+ * restart at zero in each contract, so it landed on a real but unrelated
+ * market. It passed typecheck, passed build, passed manual browser testing,
+ * and was caught by a user clicking Stake.
+ *
+ * Nothing here needs a chain or a wallet — it is all pure routing logic, which
+ * is exactly why leaving it untested was indefensible.
+ */
+
+const base = {
+  closeTime: 2_000_000_000,
+  settleAfter: 2_000_003_600,
+  status: MarketStatus.Open,
+  outcome: Outcome.Unset,
+  evidenceHash: `0x${"0".repeat(64)}` as `0x${string}`,
+  yesPool: 1_000_000n,
+  noPool: 1_000_000n,
+};
+
+/** Same numeric id in all three contracts — the collision the key exists for. */
+export const flight0: Market = {
+  ...base,
+  id: 0,
+  key: marketKey("flights", 0),
+  contract: "0x09068efb21fabeac59694e01428cf438cf38e2b3",
+  categoryId: "flights",
+  question: "Will AA100 arrive 30m+ late?",
+  flightIata: "AA100",
+  departureDate: 20260817,
+  thresholdMinutes: 30,
+  observedDelay: 0,
+};
+
+export const crypto0: Market = {
+  ...base,
+  id: 0,
+  key: marketKey("crypto", 0),
+  contract: "0x8DA11eb17D5F3f4427aA3017E95e50b132A210be",
+  categoryId: "crypto",
+  question: "Will BTC be at or above $63,000?",
+  asset: "BTC",
+  strikePrice: 6_300_000_000_000n,
+  expiryTime: 2_000_003_000,
+  observedPrice: 0n,
+};
+
+export const stock0: Market = {
+  ...base,
+  id: 0,
+  key: marketKey("stocks", 0),
+  contract: "0x451bcdB90EC6f6F5f40B5B2578aef641e36b71ca",
+  categoryId: "stocks",
+  question: "Will CSPX be at or above $840?",
+  symbol: "CSPX",
+  feed: "0x4b531A318B0e44B549F3b2f824721b3D0d51930A",
+  strikePrice: 84_000_000_000n,
+  expiryTime: 2_000_003_000,
+  maxStaleness: 100_000,
+  observedPrice: 0n,
+};
+
+const all = [flight0, crypto0, stock0];
+
+describe("contractFor", () => {
+  it("routes every market to the contract it was read from", () => {
+    for (const m of all) {
+      expect(contractFor(m).address.toLowerCase()).toBe(m.contract.toLowerCase());
+    }
+  });
+
+  /**
+   * The regression test proper. Before the fix this was the failure: three
+   * markets, three categories, but only two distinct destinations, because
+   * anything not crypto fell through to flights.
+   */
+  it("gives three distinct categories three distinct destinations", () => {
+    const destinations = new Set(all.map((m) => contractFor(m).address.toLowerCase()));
+    expect(destinations.size).toBe(all.length);
+  });
+
+  it("never sends a non-flight market to the flight contract", () => {
+    const flightAddress = contractFor(flight0).address.toLowerCase();
+    for (const m of [crypto0, stock0]) {
+      expect(contractFor(m).address.toLowerCase()).not.toBe(flightAddress);
+    }
+  });
+});
+
+describe("marketKey", () => {
+  it("distinguishes the same id across contracts", () => {
+    const keys = all.map((m) => m.key);
+    expect(new Set(keys).size).toBe(all.length);
+  });
+
+  it("is what identifies a market, not the bare id", () => {
+    expect(flight0.id).toBe(crypto0.id);
+    expect(flight0.key).not.toBe(crypto0.key);
+  });
+});
+
+describe("category registry", () => {
+  /**
+   * A category marked live with no contract behind it renders an empty tab;
+   * one backed by a contract but not marked live hides real markets.
+   */
+  it("marks exactly the categories that have markets as live", () => {
+    const live = LIVE_CATEGORIES.map((c) => c.id).sort();
+    expect(live).toEqual(["crypto", "flights", "stocks"]);
+  });
+
+  it("has no duplicate ids", () => {
+    const ids = CATEGORIES.map((c) => c.id);
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+});
+
+describe("URL round trip", () => {
+  it("survives a detail URL for every category", () => {
+    for (const m of all) {
+      const path = buildPath({ view: "detail", selectedKey: m.key, categoryFilter: "all" });
+      const [pathname, search = ""] = path.split("?");
+      expect(parse(pathname!, search).selectedKey).toBe(m.key);
+    }
+  });
+
+  it("puts the category in the path, so ids cannot collide across contracts", () => {
+    expect(buildPath({ view: "detail", selectedKey: flight0.key, categoryFilter: "all" })).toBe(
+      "/markets/flights/0",
+    );
+    expect(buildPath({ view: "detail", selectedKey: stock0.key, categoryFilter: "all" })).toBe(
+      "/markets/stocks/0",
+    );
+  });
+
+  it("keeps the category filter across a markets-list round trip", () => {
+    const path = buildPath({ view: "markets", selectedKey: null, categoryFilter: "stocks" });
+    const [pathname, search = ""] = path.split("?");
+    expect(parse(pathname!, search).categoryFilter).toBe("stocks");
+  });
+
+  it("falls back to landing on an unknown path rather than throwing", () => {
+    expect(parse("/nonsense", "").view).toBe("landing");
+  });
+});

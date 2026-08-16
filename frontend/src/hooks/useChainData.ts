@@ -33,7 +33,7 @@ export interface ChainData {
   refresh: () => Promise<void>;
 }
 
-function derivePositions(
+export function derivePositions(
   markets: Market[],
   stakes: Map<string, { yes: bigint; no: bigint; claimed: boolean }>,
 ): Position[] {
