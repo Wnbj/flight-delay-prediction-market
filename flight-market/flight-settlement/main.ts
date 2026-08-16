@@ -319,9 +319,9 @@ const feedAbi = [
 const CHAIN_READ_LIMIT = 15
 
 /** Remaining chain reads for the current execution. */
-type ReadBudget = { left: number }
+export type ReadBudget = { left: number }
 
-const newReadBudget = (reserved = 0): ReadBudget => ({ left: CHAIN_READ_LIMIT - reserved })
+export const newReadBudget = (reserved = 0): ReadBudget => ({ left: CHAIN_READ_LIMIT - reserved })
 
 /**
  * How far back the round walk may go.
@@ -382,7 +382,7 @@ const flightResponseSchema = z.array(flightContractSchema)
  * ambiguity, so it can't silently disagree between engines the way parsing
  * a string can.
  */
-const parseAeroDataBoxUtc = (s: string): number => {
+export const parseAeroDataBoxUtc = (s: string): number => {
   const m = /^(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2})Z$/.exec(s)
   if (!m) throw new Error(`Unrecognized AeroDataBox timestamp: ${s}`)
   const [, y, mo, d, h, mi] = m
@@ -405,7 +405,7 @@ type Observation = {
 }
 
 /** What one provider reported, before any cross-source reconciliation. */
-type SourceReading = {
+export type SourceReading = {
   delayMinutes: number
   status: string
 }
@@ -515,7 +515,7 @@ const readSecondary = (
  * gets paid. Averaging them would silently manufacture an answer neither
  * source actually gave.
  */
-const outcomeFor = (reading: SourceReading, thresholdMinutes: number): number => {
+export const outcomeFor = (reading: SourceReading, thresholdMinutes: number): number => {
   if (reading.status === "cancelled") return OUTCOME_YES
   if (reading.status !== "landed") return OUTCOME_VOID
   return reading.delayMinutes >= thresholdMinutes ? OUTCOME_YES : OUTCOME_NO
@@ -688,7 +688,38 @@ const readKrakenPrice = (
 }
 
 /** Price in whole units, scaled to the 8-decimal integer the contract uses. */
-const toScaledPrice = (price: number): number => Math.round(price * PRICE_DECIMALS)
+export const toScaledPrice = (price: number): number => Math.round(price * PRICE_DECIMALS)
+
+/**
+ * The median venue price, but only once every venue agrees which side of the
+ * strike it landed on. Throws otherwise, which the caller turns into a void.
+ *
+ * Agreement is on the OUTCOME, not on the numbers being close. Two venues a
+ * few cents apart either side of the strike are numerically near-identical and
+ * disagree completely about who gets paid; averaging them would invent an
+ * answer neither venue gave. Pure and exported so the rule can be tested
+ * without three HTTP calls.
+ */
+export const reconcileVenuePrices = (
+  names: string[],
+  prices: number[],
+  strikePrice: number,
+  symbol: string,
+): number => {
+  if (prices.length === 0) throw new Error(`No venue prices for ${symbol}`)
+
+  const outcomes = prices.map((p) => (p >= strikePrice ? OUTCOME_YES : OUTCOME_NO))
+  if (!outcomes.every((o) => o === outcomes[0])) {
+    throw new Error(
+      `Venues disagree on ${symbol} vs strike ${strikePrice}: ${names
+        .map((n, i) => `${n}=${prices[i]}->${outcomes[i]}`)
+        .join(" vs ")}`,
+    )
+  }
+
+  const sorted = [...prices].sort((a, b) => a - b)
+  return sorted[Math.floor(sorted.length / 2)]!
+}
 
 const fetchCryptoPrice = (
   sendRequester: HTTPSendRequester,
@@ -703,22 +734,12 @@ const fetchCryptoPrice = (
   ]
 
   const prices = venues.map((v) => toScaledPrice(v.read()))
-
-  // Same rule as the flight path: sources must agree on the OUTCOME, not merely
-  // be numerically close. Two venues either side of the strike are only cents
-  // apart but disagree about who gets paid, and averaging them would invent an
-  // answer neither venue gave.
-  const outcomes = prices.map((p) => (p >= strikePrice ? OUTCOME_YES : OUTCOME_NO))
-  if (!outcomes.every((o) => o === outcomes[0])) {
-    throw new Error(
-      `Venues disagree on ${symbol} vs strike ${strikePrice}: ${venues
-        .map((v, i) => `${v.name}=${prices[i]}->${outcomes[i]}`)
-        .join(" vs ")}`,
-    )
-  }
-
-  const sorted = [...prices].sort((a, b) => a - b)
-  const medianPrice = sorted[Math.floor(sorted.length / 2)]!
+  const medianPrice = reconcileVenuePrices(
+    venues.map((v) => v.name),
+    prices,
+    strikePrice,
+    symbol,
+  )
 
   return { delayMinutes: medianPrice, status: "priced", fetchedAt: 0 }
 }
@@ -1023,7 +1044,7 @@ export const onCryptoSettlementRequested = (
 
 // --- stock / commodity settlement, from a Chainlink Data Feed ---------------
 
-type FeedRound = { roundId: bigint; answer: bigint; updatedAt: number }
+export type FeedRound = { roundId: bigint; answer: bigint; updatedAt: number }
 
 /**
  * One feed read, pinned to a block.
@@ -1117,6 +1138,52 @@ const roundInForceAt = (
   throw new Error(`No feed round at or before ${target} within ${MAX_ROUND_WALK} rounds`)
 }
 
+/**
+ * Is the round in force at expiry fit to settle on at all?
+ *
+ * A feed that stopped publishing keeps answering with its last value, and that
+ * value gets less true every hour — refunding beats settling a market on a
+ * price from a day the question was not about. Throws rather than returning a
+ * flag so callers cannot forget to check it.
+ */
+export const checkRoundUsable = (
+  atExpiry: FeedRound,
+  expiry: number,
+  maxStaleness: number,
+): void => {
+  const age = expiry - atExpiry.updatedAt
+  if (age > maxStaleness) {
+    throw new Error(`Round at expiry is ${age}s old, tolerance is ${maxStaleness}s`)
+  }
+  if (atExpiry.answer <= 0n) {
+    throw new Error(`Feed answered ${atExpiry.answer} at expiry`)
+  }
+}
+
+/**
+ * THE TRADING-CALENDAR CHECK, and the outcome that follows it.
+ *
+ * A feed publishes through the weekend, simply repeating the last price with a
+ * fresh timestamp — measured on CSPX/USD, the answer changed on every weekday
+ * round and not once from Friday to Saturday. If the price never moved between
+ * the book closing and expiry, the outcome was already fixed when the last
+ * stake was placed, and paying it out would reward whoever noticed the market
+ * was over. The chain cannot know an exchange calendar; it can notice that
+ * nothing happened.
+ */
+export const resolveStockOutcome = (
+  atExpiry: FeedRound,
+  atClose: FeedRound,
+  strike: bigint,
+): number => {
+  if (atClose.answer === atExpiry.answer) {
+    throw new Error(
+      `Price did not move between close and expiry (${atExpiry.answer}) — market was already decided`,
+    )
+  }
+  return atExpiry.answer >= strike ? OUTCOME_YES : OUTCOME_NO
+}
+
 export type StockTerms = {
   marketId: bigint
   feed: string
@@ -1167,35 +1234,13 @@ const settleStockMarket = (runtime: Runtime<Config>, t: StockTerms): string => {
     const latest = readFeedRound(runtime, evmClient, feed, atBlock, budget)
     const atExpiry = roundInForceAt(runtime, evmClient, feed, atBlock, budget, latest, expiry)
 
-    // A feed that stopped publishing keeps answering with its last value, and
-    // that value gets less true every hour. Better to refund than to settle a
-    // market on a price from a day the question was not about.
-    const age = expiry - atExpiry.updatedAt
-    if (age > Number(maxStaleness)) {
-      throw new Error(`Round at expiry is ${age}s old, tolerance is ${maxStaleness}s`)
-    }
-    if (atExpiry.answer <= 0n) {
-      throw new Error(`Feed answered ${atExpiry.answer} at expiry`)
-    }
+    checkRoundUsable(atExpiry, expiry, Number(maxStaleness))
 
     const atClose = roundInForceAt(runtime, evmClient, feed, atBlock, budget, atExpiry, close)
 
-    // THE TRADING-CALENDAR CHECK. A feed publishes through the weekend, simply
-    // repeating the last price with a fresh timestamp — measured on CSPX/USD,
-    // the answer changed on every weekday round and not once from Friday to
-    // Saturday. If the price never moved between the book closing and expiry,
-    // the outcome was already fixed when the last stake was placed, and paying
-    // it out would reward whoever noticed the market was over. The chain cannot
-    // know an exchange calendar; it can notice that nothing happened.
-    if (atClose.answer === atExpiry.answer) {
-      throw new Error(
-        `Price did not move between close and expiry (${atExpiry.answer}) — market was already decided`,
-      )
-    }
-
+    outcome = resolveStockOutcome(atExpiry, atClose, strike)
     observedPrice = atExpiry.answer
     priceAtClose = atClose.answer
-    outcome = observedPrice >= strike ? OUTCOME_YES : OUTCOME_NO
   } catch (err) {
     runtime.log(`Resolution failed, voiding stock market ${marketId}: ${err}`)
     outcome = OUTCOME_VOID
@@ -1338,7 +1383,7 @@ const readMarketCount = (
  * reads. Markets are created and settle roughly in order, so anything
  * unresolved is near the end of the list anyway.
  */
-const idsToScan = (count: number, window: number): bigint[] => {
+export const idsToScan = (count: number, window: number): bigint[] => {
   const ids: bigint[] = []
   for (let i = count - 1; i >= 0 && ids.length < window; i--) ids.push(BigInt(i))
   return ids

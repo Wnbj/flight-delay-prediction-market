@@ -1,0 +1,239 @@
+import { describe, expect, test } from "bun:test"
+import {
+  checkRoundUsable,
+  idsToScan,
+  newReadBudget,
+  outcomeFor,
+  parseAeroDataBoxUtc,
+  reconcileVenuePrices,
+  resolveStockOutcome,
+  toScaledPrice,
+  type FeedRound,
+} from "./main"
+
+/**
+ * The rules that decide who gets paid.
+ *
+ * Every one of these was previously verified only by running the workflow
+ * against the live chain — slow, costs gas, and unable to reach the cases that
+ * matter most (a stalled feed, venues straddling the strike, a market whose
+ * price never moved). They are pure functions, so none of that is necessary.
+ *
+ * Constants are the real measurements from RUNBOOK.md rather than round
+ * numbers, so a test failing points at a real scenario.
+ */
+
+const OUTCOME_YES = 1
+const OUTCOME_NO = 2
+const OUTCOME_VOID = 3
+
+// $63,000.00 and $840.00 at the 8 decimals both the feeds and the contracts use.
+const BTC_STRIKE = 6_300_000_000_000
+const CSPX_STRIKE = 84_000_000_000n
+
+const round = (answer: bigint, updatedAt: number): FeedRound => ({
+  roundId: 1n,
+  answer,
+  updatedAt,
+})
+
+describe("outcomeFor — flight rules", () => {
+  test("a confirmed cancellation pays Yes", () => {
+    expect(outcomeFor({ status: "cancelled", delayMinutes: 0 }, 30)).toBe(OUTCOME_YES)
+  })
+
+  test("a landing at or past the threshold pays Yes", () => {
+    expect(outcomeFor({ status: "landed", delayMinutes: 30 }, 30)).toBe(OUTCOME_YES)
+    expect(outcomeFor({ status: "landed", delayMinutes: 42 }, 30)).toBe(OUTCOME_YES)
+  })
+
+  test("a landing one minute short pays No", () => {
+    expect(outcomeFor({ status: "landed", delayMinutes: 29 }, 30)).toBe(OUTCOME_NO)
+  })
+
+  test("an early arrival pays No, not void", () => {
+    expect(outcomeFor({ status: "landed", delayMinutes: -33 }, 45)).toBe(OUTCOME_NO)
+  })
+
+  /**
+   * CanceledUncertain buckets to "airborne". It is a maybe, not a fact, and it
+   * carried 13% of sampled ORD arrivals — settling it as a cancellation paid
+   * real money on an unconfirmed signal.
+   */
+  test("anything short of a confirmed result voids", () => {
+    for (const status of ["airborne", "unavailable"]) {
+      expect(outcomeFor({ status, delayMinutes: 90 }, 30)).toBe(OUTCOME_VOID)
+    }
+  })
+})
+
+describe("parseAeroDataBoxUtc", () => {
+  /**
+   * AeroDataBox returns "2026-08-14 12:55Z", which is not RFC 3339 — a space
+   * instead of the T. QuickJS's Date.parse returns NaN for it, so the workflow
+   * parses the parts itself.
+   */
+  test("parses the provider's space-separated form, in milliseconds", () => {
+    expect(parseAeroDataBoxUtc("2026-08-14 12:55Z")).toBe(Date.UTC(2026, 7, 14, 12, 55))
+  })
+
+  test("a delay is the difference in whole minutes", () => {
+    const scheduled = parseAeroDataBoxUtc("2026-08-14 12:55Z")
+    const actual = parseAeroDataBoxUtc("2026-08-14 13:37Z")
+    expect(Math.round((actual - scheduled) / 60_000)).toBe(42)
+  })
+
+  test("handles an early arrival as a negative delay", () => {
+    const scheduled = parseAeroDataBoxUtc("2026-08-13 18:00Z")
+    const actual = parseAeroDataBoxUtc("2026-08-13 17:27Z")
+    expect(Math.round((actual - scheduled) / 60_000)).toBe(-33)
+  })
+
+  /**
+   * Deliberately strict: it accepts one provider's one format and throws on
+   * anything else. This function exists because `Date.parse` silently guessed
+   * differently in QuickJS than in V8, so guessing is the behaviour being
+   * avoided — a throw voids the market, which is the safe direction.
+   */
+  test("throws on any other shape rather than guessing", () => {
+    for (const bad of ["2026-08-14T12:55Z", "2026-08-14 12:55:30Z", "not a date", ""]) {
+      expect(() => parseAeroDataBoxUtc(bad)).toThrow()
+    }
+  })
+})
+
+describe("reconcileVenuePrices — crypto", () => {
+  const venues = ["coinbase", "bitstamp", "kraken"]
+
+  test("takes the median when all venues agree on the side of the strike", () => {
+    const prices = [6_302_301_000_000, 6_302_026_000_000, 6_302_552_000_000]
+    expect(reconcileVenuePrices(venues, prices, BTC_STRIKE, "BTC")).toBe(6_302_301_000_000)
+  })
+
+  /**
+   * The case the rule exists for: venues 40 cents apart, straddling the strike.
+   * Numerically they agree to four decimal places; they disagree completely
+   * about who gets paid. Measured live on ETH at a $1,882 strike.
+   */
+  test("voids when venues straddle the strike, however close they are", () => {
+    const strike = 188_200_000_000
+    const prices = [188_201_000_000, 188_173_000_000, 188_213_000_000]
+    expect(() => reconcileVenuePrices(venues, prices, strike, "ETH")).toThrow(/disagree/)
+  })
+
+  test("settles on the strike itself as Yes, matching the contract's >=", () => {
+    const prices = [BTC_STRIKE, BTC_STRIKE, BTC_STRIKE]
+    expect(reconcileVenuePrices(venues, prices, BTC_STRIKE, "BTC")).toBe(BTC_STRIKE)
+  })
+
+  test("agrees on No when every venue is below", () => {
+    const prices = [6_299_976_000_000, 6_298_343_000_000, 6_299_000_000_000]
+    expect(reconcileVenuePrices(venues, prices, BTC_STRIKE, "BTC")).toBe(6_299_000_000_000)
+  })
+
+  test("refuses to invent an answer from no data", () => {
+    expect(() => reconcileVenuePrices([], [], BTC_STRIKE, "BTC")).toThrow()
+  })
+})
+
+describe("checkRoundUsable — feed staleness", () => {
+  const expiry = 1_786_996_800
+
+  test("accepts a round published within tolerance", () => {
+    expect(() => checkRoundUsable(round(83_869_000_000n, expiry - 3_600), expiry, 100_000)).not.toThrow()
+  })
+
+  /**
+   * EUTBL NAV on Sepolia was last published in April and still answers. A feed
+   * that stopped is exactly what this catches.
+   */
+  test("rejects a round older than the market's tolerance", () => {
+    const fourMonths = 120 * 24 * 3_600
+    expect(() => checkRoundUsable(round(1_030_900n, expiry - fourMonths), expiry, 100_000)).toThrow(
+      /old/,
+    )
+  })
+
+  test("rejects a non-positive answer", () => {
+    expect(() => checkRoundUsable(round(0n, expiry), expiry, 100_000)).toThrow()
+    expect(() => checkRoundUsable(round(-1n, expiry), expiry, 100_000)).toThrow()
+  })
+
+  test("accepts a round published after expiry, which is not staleness", () => {
+    expect(() => checkRoundUsable(round(83_869_000_000n, expiry + 60), expiry, 100_000)).not.toThrow()
+  })
+})
+
+describe("resolveStockOutcome — the trading-calendar check", () => {
+  const close = round(83_869_000_000n, 1_786_953_600)
+
+  test("pays Yes when the price at expiry is at or above the strike", () => {
+    expect(resolveStockOutcome(round(84_100_000_000n, 0), close, CSPX_STRIKE)).toBe(OUTCOME_YES)
+    expect(resolveStockOutcome(round(CSPX_STRIKE, 0), close, CSPX_STRIKE)).toBe(OUTCOME_YES)
+  })
+
+  test("pays No when it is below", () => {
+    expect(resolveStockOutcome(round(83_900_000_000n, 0), close, CSPX_STRIKE)).toBe(OUTCOME_NO)
+  })
+
+  /**
+   * The weekend case, from real measurement: CSPX answered 838.69 on Friday
+   * and the identical 838.69 on Saturday. A market spanning that was decided
+   * before the book shut, so it must void rather than pay whoever noticed.
+   */
+  test("voids when the price never moved between close and expiry", () => {
+    const frozen = round(83_869_000_000n, 1_786_996_800)
+    expect(() => resolveStockOutcome(frozen, close, CSPX_STRIKE)).toThrow(/did not move/)
+  })
+
+  test("voids on a frozen price even when it sits above the strike", () => {
+    const above = round(84_100_000_000n, 1_786_996_800)
+    const closeAtSameLevel = round(84_100_000_000n, 1_786_953_600)
+    expect(() => resolveStockOutcome(above, closeAtSameLevel, CSPX_STRIKE)).toThrow(/did not move/)
+  })
+
+  test("a one-unit move is enough to count as movement", () => {
+    const moved = round(83_869_000_001n, 1_786_996_800)
+    expect(resolveStockOutcome(moved, close, CSPX_STRIKE)).toBe(OUTCOME_NO)
+  })
+})
+
+describe("read budget", () => {
+  /**
+   * ChainRead.CallLimit is 15 per execution. Exceeding it aborts the whole run
+   * after any writes already made have landed, so the budget is tracked rather
+   * than trusted to loop bounds.
+   */
+  test("starts at the platform limit", () => {
+    expect(newReadBudget().left).toBe(15)
+  })
+
+  test("subtracts what the caller reserves", () => {
+    expect(newReadBudget(4).left).toBe(11)
+  })
+
+  test("scan window shrinks to whatever is left", () => {
+    expect(idsToScan(100, 5)).toHaveLength(5)
+    expect(idsToScan(3, 10)).toHaveLength(3)
+    expect(idsToScan(0, 10)).toHaveLength(0)
+  })
+
+  /**
+   * Newest first: markets are created and settle roughly in order, so anything
+   * unresolved is at the end of the list.
+   */
+  test("scans the newest ids first", () => {
+    expect(idsToScan(10, 3)).toEqual([9n, 8n, 7n])
+  })
+})
+
+describe("toScaledPrice", () => {
+  test("scales whole-unit prices to the contracts' 8 decimals", () => {
+    expect(toScaledPrice(63_000)).toBe(6_300_000_000_000)
+    expect(toScaledPrice(1_882.4)).toBe(188_240_000_000)
+  })
+
+  test("rounds rather than truncating, so a half cent does not vanish", () => {
+    expect(toScaledPrice(63_000.000000005)).toBe(6_300_000_000_001)
+  })
+})
