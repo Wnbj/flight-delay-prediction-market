@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import type { Address } from "viem";
 import { category } from "../lib/categories";
 import { formatSigned, formatToken } from "../lib/format";
-import { sendClaim, waitForTx } from "../lib/chain";
+import { sendAmmRedeem, sendClaim, waitForTx } from "../lib/chain";
 import { MarketStatus, type Market, type Position } from "../lib/types";
 import type { WalletState } from "../hooks/useWallet";
 
@@ -37,7 +37,9 @@ export function Portfolio({
     let open = 0;
 
     for (const p of positions) {
-      const size = p.yes + p.no;
+      // Cost, not position size: for an AMM they are different quantities in
+      // different units, and a sale returns part of the cost.
+      const size = p.cost;
       staked += size;
       claimable += p.claimable;
       const resolved =
@@ -71,7 +73,13 @@ export function Portfolio({
     setClaiming(market.key);
     setError(null);
     try {
-      const hash = await sendClaim(wallet.account as Address, market);
+      // AmmMarket has no claim() at all — it has redeem(). Calling the wrong
+      // one does not fail loudly, it simply reverts on a selector the contract
+      // has never heard of.
+      const hash =
+        market.categoryId === "amm"
+          ? await sendAmmRedeem(wallet.account as Address, market)
+          : await sendClaim(wallet.account as Address, market);
       await waitForTx(hash);
       await onRefresh();
     } catch (e) {
@@ -229,7 +237,13 @@ export function Portfolio({
                           disabled={claiming !== null}
                           onClick={() => void doClaim(p.market)}
                         >
-                          {claiming === p.market.key ? "Claiming…" : "Claim"}
+                          {claiming === p.market.key
+                            ? p.market.categoryId === "amm"
+                              ? "Redeeming…"
+                              : "Claiming…"
+                            : p.market.categoryId === "amm"
+                              ? "Redeem"
+                              : "Claim"}
                         </button>
                       )}
                     </td>

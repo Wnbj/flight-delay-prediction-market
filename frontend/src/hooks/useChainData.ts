@@ -36,7 +36,22 @@ export interface ChainData {
 export function derivePositions(
   markets: Market[],
   stakes: Map<string, { yes: bigint; no: bigint; claimed: boolean }>,
+  /**
+   * Trades by this wallet, needed only to price AMM positions: the contract
+   * records the shares you hold, not what you paid for them, and a sale
+   * returns collateral without leaving a trace in the balance.
+   */
+  trades: StakeEvent[] = [],
+  account: Address | null = null,
 ): Position[] {
+  const netInByMarket = new Map<string, bigint>();
+  for (const e of trades) {
+    if (!e.amm) continue;
+    if (account && e.user.toLowerCase() !== account.toLowerCase()) continue;
+    const sign = e.amm.direction === "buy" ? 1n : -1n;
+    netInByMarket.set(e.marketKey, (netInByMarket.get(e.marketKey) ?? 0n) + sign * e.amount);
+  }
+
   const out: Position[] = [];
   markets.forEach((m) => {
     const s = stakes.get(m.key);
@@ -44,6 +59,7 @@ export function derivePositions(
 
     const entitlement = claimablePayout(m, s.yes, s.no);
     const claimable = s.claimed ? 0n : entitlement;
+    const cost = m.categoryId === "amm" ? (netInByMarket.get(m.key) ?? 0n) : s.yes + s.no;
 
     let status: Position["status"];
     if (s.claimed) status = "Claimed";
@@ -61,6 +77,7 @@ export function derivePositions(
       claimed: s.claimed,
       claimable,
       entitlement,
+      cost,
       status,
     });
   });
@@ -195,7 +212,7 @@ export function useChainData(account: Address | null): ChainData {
           readTokenBalance(account),
           Promise.all(spenders.map((s) => readAllowance(account, s))),
         ]);
-        setPositions(derivePositions(ms, stakes));
+        setPositions(derivePositions(ms, stakes, se ?? [], account));
         setBalance(bal);
         setAllowances(new Map(spenders.map((s, i) => [s, allows[i]!])));
       } else {

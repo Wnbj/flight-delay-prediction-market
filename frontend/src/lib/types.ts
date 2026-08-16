@@ -210,6 +210,16 @@ export interface Position {
    * would report a winning wallet as flat or losing.
    */
   entitlement: bigint;
+  /**
+   * Collateral actually put in, net of anything sold back.
+   *
+   * NOT `yes + no`. For a parimutuel market the two are the same number, but
+   * for an AMM `yes`/`no` are SHARES — claims paying one unit each — so using
+   * them as the cost basis both inflates the amount at risk and makes a
+   * winning position score zero profit, since entitlement would be compared
+   * against itself.
+   */
+  cost: bigint;
   status: "Open" | "Awaiting settlement" | "Won" | "Lost" | "Refundable" | "Claimed";
 }
 

@@ -97,6 +97,72 @@ describe("derivePositions", () => {
   });
 });
 
+describe("derivePositions — cost basis", () => {
+  const ammMarket = { ...amm0, status: MarketStatus.Settled, outcome: Outcome.Yes } as Market;
+
+  const held = (yes: bigint, no: bigint, claimed = false) =>
+    new Map([[ammMarket.key, { yes, no, claimed }]]);
+
+  const trade = (
+    direction: "buy" | "sell",
+    collateral: bigint,
+    shares: bigint,
+    block = 1n,
+  ): StakeEvent => ({
+    ...stake(ammMarket.key, alice, true, collateral),
+    blockNumber: block,
+    amm: { direction, shares },
+  });
+
+  /**
+   * For a parimutuel market the stake IS the cost, so nothing changes.
+   */
+  it("uses the stake itself for a parimutuel position", () => {
+    const m = resolved(flight0, Outcome.Yes, 1_000_000n, 3_000_000n);
+    const stakes = new Map([[m.key, { yes: 1_000_000n, no: 0n, claimed: false }]]);
+    expect(derivePositions([m], stakes)[0]!.cost).toBe(1_000_000n);
+  });
+
+  /**
+   * For an AMM they are different quantities in different units. Using shares
+   * as the cost made a winning position score zero — entitlement compared
+   * against itself — and overstated the money at risk by roughly double.
+   */
+  it("uses collateral paid, not shares held, for an AMM position", () => {
+    const trades = [trade("buy", 3_000_000n, 5_307_692n)];
+    const [p] = derivePositions([ammMarket], held(5_307_692n, 0n), trades, alice);
+
+    expect(p!.cost).toBe(3_000_000n);
+    expect(p!.entitlement).toBe(5_307_692n);
+    expect(p!.entitlement - p!.cost).toBe(2_307_692n);
+  });
+
+  it("nets a partial sale off the cost", () => {
+    const trades = [
+      trade("buy", 4_000_000n, 6_000_000n),
+      trade("sell", 1_500_000n, 2_000_000n, 2n),
+    ];
+    const [p] = derivePositions([ammMarket], held(4_000_000n, 0n), trades, alice);
+    expect(p!.cost).toBe(2_500_000n);
+  });
+
+  /** Somebody else's trades must never be priced into this wallet's position. */
+  it("ignores trades by other wallets", () => {
+    const mine = trade("buy", 3_000_000n, 5_000_000n);
+    const theirs: StakeEvent = { ...trade("buy", 9_000_000n, 9_000_000n, 2n), user: bob };
+    const [p] = derivePositions([ammMarket], held(5_000_000n, 0n), [mine, theirs], alice);
+    expect(p!.cost).toBe(3_000_000n);
+  });
+
+  it("reports zero cost when the trade history could not be loaded", () => {
+    // Events are allowed to fail independently of markets, so this must not
+    // throw — it just cannot price the position.
+    const [p] = derivePositions([ammMarket], held(5_000_000n, 0n), [], alice);
+    expect(p!.cost).toBe(0n);
+    expect(p!.entitlement).toBe(5_000_000n);
+  });
+});
+
 describe("deriveTraders", () => {
   /**
    * Parimutuel is zero-sum by construction: the winners split exactly what the
