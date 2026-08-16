@@ -49,8 +49,12 @@ Deployed 2026-08-16. Its `getExpectedWorkflowName()` was compared byte-for-byte
 against CryptoMarket's before anything was seeded; a mismatch there fails every
 settlement *silently*.
 
-Five rungs live, seeded 40 mUSDC each at 30 bps, **expiry ~23:21 UTC**:
+Five rungs live, seeded 40 mUSDC each at 30 bps:
 $62,750 / $63,000 / $63,250 / $63,500 / $63,750 opened at 85/70/45/25/12%.
+**Trading closes 19:51:36 UTC, expiry 20:21:36, settleable from 20:22:36**
+(`settleAfter` 1786911756). Read those off `terms()` rather than the UI — the
+app renders timestamps in the browser's local zone, and this file has already
+had them written down three hours out because of it.
 Settling is the same manual two-step as before — `requestSettlement(i)`, then
 `cre workflow simulate ... --trigger-index 1 --evm-tx-hash <tx>`.
 
