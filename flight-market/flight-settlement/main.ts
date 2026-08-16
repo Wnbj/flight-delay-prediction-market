@@ -275,6 +275,13 @@ const MAX_SETTLEMENTS_PER_SWEEP = 2
  */
 const STOCK_WALK_RESERVE = 6
 
+/*
+ * Stock sweep budget, worst case, against the limit of 15:
+ *   1 header + 1 marketCount + 5 core + 1 terms + 1 decimals + 6 walk = 15
+ * The scan window is derived from what is left rather than fixed, so adding
+ * another per-settlement read narrows the scan instead of silently overrunning.
+ */
+
 /** The AggregatorV3Interface subset this workflow reads. */
 const feedAbi = [
   {
@@ -289,6 +296,13 @@ const feedAbi = [
       { name: "updatedAt", type: "uint256" },
       { name: "answeredInRound", type: "uint80" },
     ],
+  },
+  {
+    type: "function",
+    name: "decimals",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "uint8" }],
   },
   {
     type: "function",
@@ -342,6 +356,9 @@ const ASSET_SYMBOLS = ["BTC", "ETH"] as const
 
 /** Prices are carried at 8 decimals, matching the strike stored on chain. */
 const PRICE_DECIMALS = 100_000_000
+
+/** The exponent behind PRICE_DECIMALS, for rescaling feeds that disagree. */
+const PRICE_SCALE_DECIMALS = 8
 
 // --- API response --------------------------------------------------------
 // AeroDataBox (via RapidAPI): GET /flights/number/{iata}/{YYYY-MM-DD}
@@ -1171,17 +1188,46 @@ export const checkRoundUsable = (
  * was over. The chain cannot know an exchange calendar; it can notice that
  * nothing happened.
  */
+/**
+ * A feed's raw answer rescaled to the 8 decimals every strike and every
+ * `observedValue` in this codebase uses.
+ *
+ * Feeds do not agree on scale, and assuming they do is wrong in both
+ * directions. Measured on Sepolia: CSPX/USD and XAU/USD publish 8 decimals,
+ * USTB NAV and USDW Reserves publish 6 — read as 8, USTB's $11.18 becomes
+ * $0.11 — and stETH Proof of Reserves publishes 18, whose raw answer
+ * (9,505,650,857,465,828,722,927,470) does not merely misread, it is five
+ * orders of magnitude past what a uint64 strike can even hold.
+ *
+ * Normalising here rather than widening the strike keeps one convention
+ * across contracts, workflow and UI, and brings an 18-decimal answer back
+ * inside uint64 comfortably.
+ */
+export const normalizeToEightDecimals = (answer: bigint, decimals: number): bigint => {
+  if (decimals === PRICE_SCALE_DECIMALS) return answer
+  if (decimals > PRICE_SCALE_DECIMALS) {
+    return answer / 10n ** BigInt(decimals - PRICE_SCALE_DECIMALS)
+  }
+  return answer * 10n ** BigInt(PRICE_SCALE_DECIMALS - decimals)
+}
+
 export const resolveStockOutcome = (
   atExpiry: FeedRound,
   atClose: FeedRound,
   strike: bigint,
-): number => {
+  decimals: number,
+): { outcome: number; observed: bigint } => {
+  // Movement is checked on the RAW answers, before any rescaling. An
+  // 18-decimal feed can move in a digit that normalising to 8 would truncate
+  // away, and truncation must never turn a real move into "nothing happened".
   if (atClose.answer === atExpiry.answer) {
     throw new Error(
       `Price did not move between close and expiry (${atExpiry.answer}) — market was already decided`,
     )
   }
-  return atExpiry.answer >= strike ? OUTCOME_YES : OUTCOME_NO
+
+  const observed = normalizeToEightDecimals(atExpiry.answer, decimals)
+  return { outcome: observed >= strike ? OUTCOME_YES : OUTCOME_NO, observed }
 }
 
 export type StockTerms = {
@@ -1231,6 +1277,19 @@ const settleStockMarket = (runtime: Runtime<Config>, t: StockTerms): string => {
   let priceAtClose = 0n
 
   try {
+    const decimals = decodeFunctionResult({
+      abi: feedAbi,
+      functionName: "decimals",
+      data: ethCall(
+        runtime,
+        evmClient,
+        feed,
+        encodeFunctionData({ abi: feedAbi, functionName: "decimals" }),
+        atBlock,
+        budget,
+      ),
+    }) as number
+
     const latest = readFeedRound(runtime, evmClient, feed, atBlock, budget)
     const atExpiry = roundInForceAt(runtime, evmClient, feed, atBlock, budget, latest, expiry)
 
@@ -1238,9 +1297,10 @@ const settleStockMarket = (runtime: Runtime<Config>, t: StockTerms): string => {
 
     const atClose = roundInForceAt(runtime, evmClient, feed, atBlock, budget, atExpiry, close)
 
-    outcome = resolveStockOutcome(atExpiry, atClose, strike)
-    observedPrice = atExpiry.answer
-    priceAtClose = atClose.answer
+    const resolved = resolveStockOutcome(atExpiry, atClose, strike, Number(decimals))
+    outcome = resolved.outcome
+    observedPrice = resolved.observed
+    priceAtClose = normalizeToEightDecimals(atClose.answer, Number(decimals))
   } catch (err) {
     runtime.log(`Resolution failed, voiding stock market ${marketId}: ${err}`)
     outcome = OUTCOME_VOID
@@ -1546,8 +1606,9 @@ export const onSweepStocks = (runtime: Runtime<Config>): string => {
 
   const count = readMarketCount(runtime, evmClient, address, atBlock, reads)
 
-  // Reserve the terms read plus room for a feed walk of a few rounds.
-  const window = Math.max(1, reads.left - 1 - STOCK_WALK_RESERVE)
+  // Reserve the two per-market reads settling costs — terms, and the feed's
+  // own decimals() — plus room for a feed walk of a few rounds.
+  const window = Math.max(1, reads.left - 2 - STOCK_WALK_RESERVE)
 
   for (const id of idsToScan(count, window)) {
     const c = decodeFunctionResult({

@@ -5,6 +5,7 @@ import {
   newReadBudget,
   outcomeFor,
   parseAeroDataBoxUtc,
+  normalizeToEightDecimals,
   reconcileVenuePrices,
   resolveStockOutcome,
   toScaledPrice,
@@ -164,16 +165,58 @@ describe("checkRoundUsable — feed staleness", () => {
   })
 })
 
+describe("normalizeToEightDecimals", () => {
+  /**
+   * Real Sepolia feeds, real raw answers. Assuming 8 decimals for all of them
+   * is wrong in both directions and by five orders of magnitude at worst.
+   */
+  test("leaves an 8-decimal feed untouched (CSPX $838.69)", () => {
+    expect(normalizeToEightDecimals(83_869_000_000n, 8)).toBe(83_869_000_000n)
+  })
+
+  test("scales a 6-decimal feed up (USTB NAV $11.177748)", () => {
+    // Read as 8 decimals this was $0.11 instead of $11.18.
+    expect(normalizeToEightDecimals(11_177_748n, 6)).toBe(1_117_774_800n)
+  })
+
+  test("scales an 18-decimal feed down (stETH reserves, 9.5M)", () => {
+    const raw = 9_505_650_857_465_828_722_927_470n
+    const normalized = normalizeToEightDecimals(raw, 18)
+    // 9,505,650.85746582 tokens — matching what the feed actually reports.
+    expect(normalized).toBe(950_565_085_746_582n)
+    // The raw answer is far past a uint64 strike; the normalized one is not.
+    expect(raw > 18_446_744_073_709_551_615n).toBe(true)
+    expect(normalized < 18_446_744_073_709_551_615n).toBe(true)
+  })
+
+  test("scaling up then down is lossless for feeds coarser than 8", () => {
+    expect(normalizeToEightDecimals(37_621_700_820_000n, 6) / 100n).toBe(37_621_700_820_000n)
+  })
+})
+
 describe("resolveStockOutcome — the trading-calendar check", () => {
   const close = round(83_869_000_000n, 1_786_953_600)
 
   test("pays Yes when the price at expiry is at or above the strike", () => {
-    expect(resolveStockOutcome(round(84_100_000_000n, 0), close, CSPX_STRIKE)).toBe(OUTCOME_YES)
-    expect(resolveStockOutcome(round(CSPX_STRIKE, 0), close, CSPX_STRIKE)).toBe(OUTCOME_YES)
+    expect(resolveStockOutcome(round(84_100_000_000n, 0), close, CSPX_STRIKE, 8).outcome).toBe(
+      OUTCOME_YES,
+    )
+    expect(resolveStockOutcome(round(CSPX_STRIKE, 0), close, CSPX_STRIKE, 8).outcome).toBe(
+      OUTCOME_YES,
+    )
   })
 
   test("pays No when it is below", () => {
-    expect(resolveStockOutcome(round(83_900_000_000n, 0), close, CSPX_STRIKE)).toBe(OUTCOME_NO)
+    expect(resolveStockOutcome(round(83_900_000_000n, 0), close, CSPX_STRIKE, 8).outcome).toBe(
+      OUTCOME_NO,
+    )
+  })
+
+  test("reports the observed price rescaled to 8 decimals", () => {
+    // A 6-decimal feed at 840.500000 against an 8-decimal strike.
+    const r = resolveStockOutcome(round(840_500_000n, 0), round(838_690_000n, 0), CSPX_STRIKE, 6)
+    expect(r.observed).toBe(84_050_000_000n)
+    expect(r.outcome).toBe(OUTCOME_YES)
   })
 
   /**
@@ -183,18 +226,32 @@ describe("resolveStockOutcome — the trading-calendar check", () => {
    */
   test("voids when the price never moved between close and expiry", () => {
     const frozen = round(83_869_000_000n, 1_786_996_800)
-    expect(() => resolveStockOutcome(frozen, close, CSPX_STRIKE)).toThrow(/did not move/)
+    expect(() => resolveStockOutcome(frozen, close, CSPX_STRIKE, 8)).toThrow(/did not move/)
   })
 
   test("voids on a frozen price even when it sits above the strike", () => {
     const above = round(84_100_000_000n, 1_786_996_800)
     const closeAtSameLevel = round(84_100_000_000n, 1_786_953_600)
-    expect(() => resolveStockOutcome(above, closeAtSameLevel, CSPX_STRIKE)).toThrow(/did not move/)
+    expect(() => resolveStockOutcome(above, closeAtSameLevel, CSPX_STRIKE, 8)).toThrow(
+      /did not move/,
+    )
   })
 
   test("a one-unit move is enough to count as movement", () => {
     const moved = round(83_869_000_001n, 1_786_996_800)
-    expect(resolveStockOutcome(moved, close, CSPX_STRIKE)).toBe(OUTCOME_NO)
+    expect(resolveStockOutcome(moved, close, CSPX_STRIKE, 8).outcome).toBe(OUTCOME_NO)
+  })
+
+  /**
+   * Movement is checked on raw answers precisely so this case works: an
+   * 18-decimal feed moving in a digit that rescaling to 8 would truncate away
+   * must still count as having moved.
+   */
+  test("sees a move too small to survive rescaling", () => {
+    const a = round(9_505_650_857_465_828_722_927_470n, 1_786_953_600)
+    const b = round(9_505_650_857_465_828_722_927_471n, 1_786_996_800)
+    expect(normalizeToEightDecimals(a.answer, 18)).toBe(normalizeToEightDecimals(b.answer, 18))
+    expect(() => resolveStockOutcome(b, a, 1n, 18)).not.toThrow()
   })
 })
 
