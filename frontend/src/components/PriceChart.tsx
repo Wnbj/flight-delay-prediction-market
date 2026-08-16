@@ -75,8 +75,9 @@ export function PriceChart({ market }: { market: Market }) {
 
   if (!isPriceMarket(market)) return null;
 
-  // A strike outside the window is not drawn at the edge, which would read as
-  // "the strike is here". It is said in words instead.
+  // A strike outside the window simply is not drawn. Pinning it to the edge
+  // would read as "the strike is here", and the header already states the
+  // strike a line away.
   const strikeInView = strike >= min && strike <= max;
 
   const y = (v: number) => (max === min ? 150 : 300 - ((v - min) / (max - min)) * 300);
@@ -202,13 +203,6 @@ export function PriceChart({ market }: { market: Market }) {
               />
             )}
       </svg>
-
-      {hasData && !strikeInView && (
-        <div className="muted" style={{ fontSize: 11 }}>
-          Strike {formatScaled(strike)} is {strike > max ? "above" : "below"} this range — the
-          chart is scaled to the price, so it stays put as you move along the ladder.
-        </div>
-      )}
 
       {!hasData && !loading && (
         <div className="muted" style={{ fontSize: 11 }}>
