@@ -8,6 +8,7 @@ const LINKS: { view: View; label: string }[] = [
   { view: "markets", label: "Markets" },
   { view: "portfolio", label: "Portfolio" },
   { view: "leaderboard", label: "Leaderboard" },
+  { view: "live", label: "Live" },
 ];
 
 export function Nav({

@@ -9,6 +9,7 @@ import { Markets } from "./views/Markets";
 import { Detail } from "./views/Detail";
 import { Portfolio } from "./views/Portfolio";
 import { Leaderboard } from "./views/Leaderboard";
+import { Live } from "./views/Live";
 import type { View } from "./lib/view";
 import { MarketStatus } from "./lib/types";
 import { eventKeyFor } from "./lib/events";
@@ -203,6 +204,8 @@ export default function App() {
               onRefresh={data.refresh}
             />
           )}
+
+          {view === "live" && <Live markets={data.markets} lpEvents={data.lpEvents} />}
 
           {view === "leaderboard" && (
             <Leaderboard

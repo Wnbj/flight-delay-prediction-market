@@ -484,3 +484,36 @@ export function orderLogs(a: SettlementLog, b: SettlementLog): number {
 
 /** The dedupe identity of a log. A transaction carries several. */
 export const logId = (l: SettlementLog) => `${l.txHash}:${l.logIndex}`;
+
+/**
+ * Fold a fresh scan into what is already known, by union.
+ *
+ * WHY UNION AND NOT REPLACE-THE-WINDOW, which is the obvious way to make a
+ * reorg self-correcting: **this endpoint answers identical queries with
+ * different results.** Measured, four full scans back to back, no errors
+ * reported by any of them:
+ *
+ *     settled   23 · 27 · 27 · 27
+ *     requested 28 · 24 · 24 · 28
+ *     report    39 · 39 · 33 · 39
+ *
+ * The short answers are always missing the most RECENT logs, which is the other
+ * face of asking for `"latest"`: the upper bound is resolved by whichever
+ * load-balanced node serves the call, and one that lags simply has fewer blocks
+ * to report. It does not error, because from its own point of view it answered
+ * completely.
+ *
+ * Deleting a window on the strength of that would make a settled market flicker
+ * back to "waiting for a report" whenever a lagging node answered — during a
+ * demo, on the one screen whose whole job is to be believed. A union cannot do
+ * that. What it gives up is automatic reorg correction, which at this depth is
+ * a far rarer event than the lag that is provably happening right now, and a
+ * page reload resolves it.
+ */
+export function mergeLogs(
+  known: Map<string, SettlementLog>,
+  incoming: SettlementLog[],
+): Map<string, SettlementLog> {
+  for (const l of incoming) known.set(logId(l), l);
+  return known;
+}

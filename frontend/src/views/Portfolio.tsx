@@ -8,6 +8,7 @@ import {
   sendClaim,
   waitForTx,
 } from "../lib/chain";
+import { SummaryCard } from "../components/SummaryCard";
 import { MarketStatus, type Market, type Position } from "../lib/types";
 import type { WalletState } from "../hooks/useWallet";
 
@@ -308,27 +309,6 @@ export function Portfolio({
           </table>
         </div>
       )}
-    </div>
-  );
-}
-
-function SummaryCard({
-  label,
-  value,
-  color,
-  accent,
-}: {
-  label: string;
-  value: string;
-  color?: string;
-  accent?: boolean;
-}) {
-  return (
-    <div className="card" style={accent ? { boxShadow: "0 0 0 1px var(--color-accent)" } : undefined}>
-      <div className="eyebrow">{label}</div>
-      <div className="heading" style={{ fontSize: 24, color }}>
-        {value}
-      </div>
     </div>
   );
 }

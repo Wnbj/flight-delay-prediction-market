@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { contractFor, marketKey } from "./chain";
-import { buildPath, parse } from "./router";
+import { buildPath, KNOWN_PATHS, parse } from "./router";
+import type { View } from "./view";
 import { CATEGORIES, LIVE_CATEGORIES } from "./categories";
 import {
   AMM_MARKET_ADDRESS,
@@ -200,5 +201,35 @@ describe("URL round trip", () => {
 
   it("falls back to landing on an unknown path rather than throwing", () => {
     expect(parse("/nonsense", "").view).toBe("landing");
+  });
+});
+
+/**
+ * Registering a route touches six places and the compiler guards five of them:
+ * the `View` union, the `buildPath` switch (defaultless, so it fails to compile
+ * without a case), the `parse` branch, the nav entry and the render block.
+ *
+ * The sixth is the address-bar correction that runs once on mount. Forgetting
+ * it does not fail anything — it silently rewrites a deep link to `/`, which
+ * looks exactly like the link being wrong. So it is asserted here instead.
+ */
+describe("route registration", () => {
+  const VIEWS: View[] = ["landing", "markets", "detail", "portfolio", "leaderboard", "live"];
+
+  it("survives a round trip for every top-level view", () => {
+    for (const view of VIEWS) {
+      if (view === "detail") continue; // needs a market key; covered above
+      const path = buildPath({ view, selectedKey: null, categoryFilter: "all" });
+      const [pathname, search = ""] = path.split("?");
+      expect(parse(pathname!, search).view).toBe(view);
+    }
+  });
+
+  it("recognises every view's own path as one the app owns", () => {
+    for (const view of VIEWS) {
+      const path = buildPath({ view, selectedKey: "crypto:0", categoryFilter: "all" });
+      if (path === "/") continue; // the landing page is the fallback itself
+      expect(KNOWN_PATHS.test(path), `${view} -> ${path} would be rewritten to /`).toBe(true);
+    }
   });
 });

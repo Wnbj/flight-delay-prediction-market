@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
-  logId,
+  mergeLogs,
   readSettlementLogs,
   type LogFamily,
   type SettlementLog,
@@ -24,9 +24,10 @@ const POLL_MS = 6_000;
  *
  * `logsInChunks` hands its upper bound to the serving node rather than naming a
  * block, deliberately — these RPCs sit behind a load balancer and a node that
- * is behind will reject a range that runs past its own head. The consequence is
- * that we cannot know exactly how far a scan got, so the cursor is a hint and
- * this overlap is what absorbs the error. It also covers shallow reorgs.
+ * is behind will reject a range that runs past its own head. So we cannot know
+ * how far a scan actually got, and the cursor is a hint. This overlap is what
+ * absorbs the error, and it has to be generous enough to cover a node that lags
+ * by a few blocks, because such a node answers short rather than failing.
  */
 const OVERLAP = 16n;
 
@@ -60,20 +61,10 @@ export function useSettlementFeed(markets: Market[], lpEvents: LpEvent[]): Settl
       const from = cursor.current;
       const scan = await readSettlementLogs(from === null ? {} : { from });
 
-      /**
-       * REPLACE THE WINDOW, do not union it.
-       *
-       * A union looks identical until a reorg, at which point a log that no
-       * longer exists stays on screen forever — `getLogs` will never mention it
-       * again to correct us. Dropping everything at or above the scanned floor
-       * and reinserting what came back makes the visible state exactly what the
-       * chain currently says.
-       */
-      const floor = from ?? 0n;
-      for (const [id, l] of store.current) {
-        if (l.blockNumber >= floor) store.current.delete(id);
-      }
-      for (const l of scan.logs) store.current.set(logId(l), l);
+      // Union — see `mergeLogs` for the measurement that rules out replacing
+      // the window, which would let a lagging node erase a settlement from the
+      // screen and put the market back to "waiting".
+      mergeLogs(store.current, scan.logs);
 
       const next = [...store.current.values()];
       setLogs(next);

@@ -63,6 +63,20 @@ export const FORWARDER_ADDRESS = (import.meta.env.VITE_FORWARDER_ADDRESS ??
  */
 export const DON_DEPLOYED = import.meta.env.VITE_DON_DEPLOYED === "true";
 
+/**
+ * What the UI is allowed to say about how a settlement was attested.
+ *
+ * One constant, used everywhere the question comes up, because the honest
+ * answer changes on a single day and it must not be left half-changed. Today
+ * the report is produced by one local execution and broadcast; that is a real
+ * on-chain write and a real signature check by the receiver, but it is not
+ * consensus, and calling it consensus would be the one place this app lies.
+ */
+export const ATTESTATION_LABEL = DON_DEPLOYED
+  ? "Delivered through the Chainlink CRE forwarder and signed by the DON."
+  : "Delivered through the mock forwarder by `cre workflow simulate --broadcast` — " +
+    "one local execution, not DON consensus. The write and the receiver's checks are real.";
+
 export const EXPLORER = "https://sepolia.etherscan.io";
 
 export const txUrl = (hash: string) => `${EXPLORER}/tx/${hash}`;
