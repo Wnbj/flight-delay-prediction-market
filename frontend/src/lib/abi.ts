@@ -2555,3 +2555,693 @@ export const reserveMarketAbi = [
       "inputs": []
     }
   ] as const;
+
+export const ammMarketAbi = [
+    {
+      "type": "function",
+      "name": "SETTLEMENT_DELAY",
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "",
+          "type": "uint64",
+          "internalType": "uint64"
+        }
+      ],
+      "stateMutability": "view"
+    },
+    {
+      "type": "function",
+      "name": "buy",
+      "inputs": [
+        {
+          "name": "marketId",
+          "type": "uint256",
+          "internalType": "uint256"
+        },
+        {
+          "name": "isYes",
+          "type": "bool",
+          "internalType": "bool"
+        },
+        {
+          "name": "collateralIn",
+          "type": "uint256",
+          "internalType": "uint256"
+        },
+        {
+          "name": "minSharesOut",
+          "type": "uint256",
+          "internalType": "uint256"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "sharesOut",
+          "type": "uint256",
+          "internalType": "uint256"
+        }
+      ],
+      "stateMutability": "nonpayable"
+    },
+    {
+      "type": "function",
+      "name": "marketCount",
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "",
+          "type": "uint256",
+          "internalType": "uint256"
+        }
+      ],
+      "stateMutability": "view"
+    },
+    {
+      "type": "function",
+      "name": "newMarket",
+      "inputs": [
+        {
+          "name": "question",
+          "type": "string",
+          "internalType": "string"
+        },
+        {
+          "name": "asset",
+          "type": "uint8",
+          "internalType": "enum AmmMarket.Asset"
+        },
+        {
+          "name": "strikePrice",
+          "type": "uint64",
+          "internalType": "uint64"
+        },
+        {
+          "name": "closeTime",
+          "type": "uint64",
+          "internalType": "uint64"
+        },
+        {
+          "name": "expiryTime",
+          "type": "uint64",
+          "internalType": "uint64"
+        },
+        {
+          "name": "liquidity",
+          "type": "uint256",
+          "internalType": "uint256"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "marketId",
+          "type": "uint256",
+          "internalType": "uint256"
+        }
+      ],
+      "stateMutability": "nonpayable"
+    },
+    {
+      "type": "function",
+      "name": "noShares",
+      "inputs": [
+        {
+          "name": "",
+          "type": "uint256",
+          "internalType": "uint256"
+        },
+        {
+          "name": "",
+          "type": "address",
+          "internalType": "address"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "",
+          "type": "uint256",
+          "internalType": "uint256"
+        }
+      ],
+      "stateMutability": "view"
+    },
+    {
+      "type": "function",
+      "name": "pool",
+      "inputs": [
+        {
+          "name": "marketId",
+          "type": "uint256",
+          "internalType": "uint256"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "status",
+          "type": "uint8",
+          "internalType": "uint8"
+        },
+        {
+          "name": "outcome",
+          "type": "uint8",
+          "internalType": "uint8"
+        },
+        {
+          "name": "observedValue",
+          "type": "int256",
+          "internalType": "int256"
+        },
+        {
+          "name": "evidenceHash",
+          "type": "bytes32",
+          "internalType": "bytes32"
+        },
+        {
+          "name": "maker",
+          "type": "address",
+          "internalType": "address"
+        },
+        {
+          "name": "yesReserve",
+          "type": "uint256",
+          "internalType": "uint256"
+        },
+        {
+          "name": "noReserve",
+          "type": "uint256",
+          "internalType": "uint256"
+        },
+        {
+          "name": "collateral",
+          "type": "uint256",
+          "internalType": "uint256"
+        }
+      ],
+      "stateMutability": "view"
+    },
+    {
+      "type": "function",
+      "name": "quote",
+      "inputs": [
+        {
+          "name": "marketId",
+          "type": "uint256",
+          "internalType": "uint256"
+        },
+        {
+          "name": "isYes",
+          "type": "bool",
+          "internalType": "bool"
+        },
+        {
+          "name": "collateralIn",
+          "type": "uint256",
+          "internalType": "uint256"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "",
+          "type": "uint256",
+          "internalType": "uint256"
+        }
+      ],
+      "stateMutability": "view"
+    },
+    {
+      "type": "function",
+      "name": "redeem",
+      "inputs": [
+        {
+          "name": "marketId",
+          "type": "uint256",
+          "internalType": "uint256"
+        }
+      ],
+      "outputs": [],
+      "stateMutability": "nonpayable"
+    },
+    {
+      "type": "function",
+      "name": "redeemed",
+      "inputs": [
+        {
+          "name": "",
+          "type": "uint256",
+          "internalType": "uint256"
+        },
+        {
+          "name": "",
+          "type": "address",
+          "internalType": "address"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "",
+          "type": "bool",
+          "internalType": "bool"
+        }
+      ],
+      "stateMutability": "view"
+    },
+    {
+      "type": "function",
+      "name": "requestSettlement",
+      "inputs": [
+        {
+          "name": "marketId",
+          "type": "uint256",
+          "internalType": "uint256"
+        }
+      ],
+      "outputs": [],
+      "stateMutability": "nonpayable"
+    },
+    {
+      "type": "function",
+      "name": "terms",
+      "inputs": [
+        {
+          "name": "marketId",
+          "type": "uint256",
+          "internalType": "uint256"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "question",
+          "type": "string",
+          "internalType": "string"
+        },
+        {
+          "name": "asset",
+          "type": "uint8",
+          "internalType": "uint8"
+        },
+        {
+          "name": "strikePrice",
+          "type": "uint64",
+          "internalType": "uint64"
+        },
+        {
+          "name": "closeTime",
+          "type": "uint64",
+          "internalType": "uint64"
+        },
+        {
+          "name": "expiryTime",
+          "type": "uint64",
+          "internalType": "uint64"
+        },
+        {
+          "name": "settleAfter",
+          "type": "uint64",
+          "internalType": "uint64"
+        }
+      ],
+      "stateMutability": "view"
+    },
+    {
+      "type": "function",
+      "name": "token",
+      "inputs": [],
+      "outputs": [
+        {
+          "name": "",
+          "type": "address",
+          "internalType": "contract IERC20"
+        }
+      ],
+      "stateMutability": "view"
+    },
+    {
+      "type": "function",
+      "name": "withdrawMakerLiquidity",
+      "inputs": [
+        {
+          "name": "marketId",
+          "type": "uint256",
+          "internalType": "uint256"
+        }
+      ],
+      "outputs": [],
+      "stateMutability": "nonpayable"
+    },
+    {
+      "type": "function",
+      "name": "yesPriceBps",
+      "inputs": [
+        {
+          "name": "marketId",
+          "type": "uint256",
+          "internalType": "uint256"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "",
+          "type": "uint256",
+          "internalType": "uint256"
+        }
+      ],
+      "stateMutability": "view"
+    },
+    {
+      "type": "function",
+      "name": "yesShares",
+      "inputs": [
+        {
+          "name": "",
+          "type": "uint256",
+          "internalType": "uint256"
+        },
+        {
+          "name": "",
+          "type": "address",
+          "internalType": "address"
+        }
+      ],
+      "outputs": [
+        {
+          "name": "",
+          "type": "uint256",
+          "internalType": "uint256"
+        }
+      ],
+      "stateMutability": "view"
+    },
+    {
+      "type": "event",
+      "name": "Bought",
+      "inputs": [
+        {
+          "name": "marketId",
+          "type": "uint256",
+          "indexed": true,
+          "internalType": "uint256"
+        },
+        {
+          "name": "buyer",
+          "type": "address",
+          "indexed": true,
+          "internalType": "address"
+        },
+        {
+          "name": "isYes",
+          "type": "bool",
+          "indexed": false,
+          "internalType": "bool"
+        },
+        {
+          "name": "collateralIn",
+          "type": "uint256",
+          "indexed": false,
+          "internalType": "uint256"
+        },
+        {
+          "name": "sharesOut",
+          "type": "uint256",
+          "indexed": false,
+          "internalType": "uint256"
+        }
+      ],
+      "anonymous": false
+    },
+    {
+      "type": "event",
+      "name": "MarketCreated",
+      "inputs": [
+        {
+          "name": "marketId",
+          "type": "uint256",
+          "indexed": true,
+          "internalType": "uint256"
+        },
+        {
+          "name": "asset",
+          "type": "uint8",
+          "indexed": false,
+          "internalType": "uint8"
+        },
+        {
+          "name": "strikePrice",
+          "type": "uint64",
+          "indexed": false,
+          "internalType": "uint64"
+        },
+        {
+          "name": "expiryTime",
+          "type": "uint64",
+          "indexed": false,
+          "internalType": "uint64"
+        },
+        {
+          "name": "liquidity",
+          "type": "uint256",
+          "indexed": false,
+          "internalType": "uint256"
+        }
+      ],
+      "anonymous": false
+    },
+    {
+      "type": "event",
+      "name": "Redeemed",
+      "inputs": [
+        {
+          "name": "marketId",
+          "type": "uint256",
+          "indexed": true,
+          "internalType": "uint256"
+        },
+        {
+          "name": "holder",
+          "type": "address",
+          "indexed": true,
+          "internalType": "address"
+        },
+        {
+          "name": "amount",
+          "type": "uint256",
+          "indexed": false,
+          "internalType": "uint256"
+        }
+      ],
+      "anonymous": false
+    },
+    {
+      "type": "event",
+      "name": "Settled",
+      "inputs": [
+        {
+          "name": "marketId",
+          "type": "uint256",
+          "indexed": true,
+          "internalType": "uint256"
+        },
+        {
+          "name": "outcome",
+          "type": "uint8",
+          "indexed": false,
+          "internalType": "enum AmmMarket.Outcome"
+        },
+        {
+          "name": "observedValue",
+          "type": "int256",
+          "indexed": false,
+          "internalType": "int256"
+        },
+        {
+          "name": "evidenceHash",
+          "type": "bytes32",
+          "indexed": false,
+          "internalType": "bytes32"
+        }
+      ],
+      "anonymous": false
+    },
+    {
+      "type": "event",
+      "name": "SettlementRequested",
+      "inputs": [
+        {
+          "name": "marketId",
+          "type": "uint256",
+          "indexed": true,
+          "internalType": "uint256"
+        },
+        {
+          "name": "asset",
+          "type": "uint8",
+          "indexed": false,
+          "internalType": "uint8"
+        },
+        {
+          "name": "strikePrice",
+          "type": "uint64",
+          "indexed": false,
+          "internalType": "uint64"
+        },
+        {
+          "name": "expiryTime",
+          "type": "uint64",
+          "indexed": false,
+          "internalType": "uint64"
+        }
+      ],
+      "anonymous": false
+    },
+    {
+      "type": "error",
+      "name": "AlreadyRedeemed",
+      "inputs": []
+    },
+    {
+      "type": "error",
+      "name": "BadExpiry",
+      "inputs": []
+    },
+    {
+      "type": "error",
+      "name": "BadStatus",
+      "inputs": []
+    },
+    {
+      "type": "error",
+      "name": "BadStrike",
+      "inputs": []
+    },
+    {
+      "type": "error",
+      "name": "InvalidAuthor",
+      "inputs": [
+        {
+          "name": "received",
+          "type": "address",
+          "internalType": "address"
+        },
+        {
+          "name": "expected",
+          "type": "address",
+          "internalType": "address"
+        }
+      ]
+    },
+    {
+      "type": "error",
+      "name": "InvalidForwarderAddress",
+      "inputs": []
+    },
+    {
+      "type": "error",
+      "name": "InvalidSender",
+      "inputs": [
+        {
+          "name": "sender",
+          "type": "address",
+          "internalType": "address"
+        },
+        {
+          "name": "expected",
+          "type": "address",
+          "internalType": "address"
+        }
+      ]
+    },
+    {
+      "type": "error",
+      "name": "InvalidWorkflowId",
+      "inputs": [
+        {
+          "name": "received",
+          "type": "bytes32",
+          "internalType": "bytes32"
+        },
+        {
+          "name": "expected",
+          "type": "bytes32",
+          "internalType": "bytes32"
+        }
+      ]
+    },
+    {
+      "type": "error",
+      "name": "InvalidWorkflowName",
+      "inputs": [
+        {
+          "name": "received",
+          "type": "bytes10",
+          "internalType": "bytes10"
+        },
+        {
+          "name": "expected",
+          "type": "bytes10",
+          "internalType": "bytes10"
+        }
+      ]
+    },
+    {
+      "type": "error",
+      "name": "NoLiquidity",
+      "inputs": []
+    },
+    {
+      "type": "error",
+      "name": "NothingToRedeem",
+      "inputs": []
+    },
+    {
+      "type": "error",
+      "name": "OwnableInvalidOwner",
+      "inputs": [
+        {
+          "name": "owner",
+          "type": "address",
+          "internalType": "address"
+        }
+      ]
+    },
+    {
+      "type": "error",
+      "name": "OwnableUnauthorizedAccount",
+      "inputs": [
+        {
+          "name": "account",
+          "type": "address",
+          "internalType": "address"
+        }
+      ]
+    },
+    {
+      "type": "error",
+      "name": "SafeERC20FailedOperation",
+      "inputs": [
+        {
+          "name": "token",
+          "type": "address",
+          "internalType": "address"
+        }
+      ]
+    },
+    {
+      "type": "error",
+      "name": "SlippageTooHigh",
+      "inputs": []
+    },
+    {
+      "type": "error",
+      "name": "TooEarly",
+      "inputs": []
+    },
+    {
+      "type": "error",
+      "name": "TooLate",
+      "inputs": []
+    },
+    {
+      "type": "error",
+      "name": "WorkflowNameRequiresAuthorValidation",
+      "inputs": []
+    }
+  ] as const;

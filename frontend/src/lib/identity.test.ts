@@ -86,7 +86,25 @@ export const reserve0: Market = {
   observedPrice: 0n,
 };
 
-const all = [flight0, crypto0, stock0, reserve0];
+export const amm0: Market = {
+  ...base,
+  id: 0,
+  key: marketKey("amm", 0),
+  contract: "0xdc866C24Af158E55C1c424dc81d69f9F668dF27a",
+  categoryId: "amm",
+  question: "AMM: will BTC be at or above $63,000?",
+  asset: "BTC",
+  strikePrice: 6_300_000_000_000n,
+  expiryTime: 2_000_003_000,
+  yesPriceBps: 6_282,
+  yesReserve: 7_692_308n,
+  noReserve: 13_000_000n,
+  collateral: 13_000_000n,
+  maker: "0xEe7b1Bf33f5aa65c7294bAa81EbcD89f732DB90a",
+  observedPrice: 0n,
+};
+
+const all = [flight0, crypto0, stock0, reserve0, amm0];
 
 describe("contractFor", () => {
   it("routes every market to the contract it was read from", () => {
@@ -107,7 +125,7 @@ describe("contractFor", () => {
 
   it("never sends a non-flight market to the flight contract", () => {
     const flightAddress = contractFor(flight0).address.toLowerCase();
-    for (const m of [crypto0, stock0, reserve0]) {
+    for (const m of [crypto0, stock0, reserve0, amm0]) {
       expect(contractFor(m).address.toLowerCase()).not.toBe(flightAddress);
     }
   });
@@ -132,7 +150,7 @@ describe("category registry", () => {
    */
   it("marks exactly the categories that have markets as live", () => {
     const live = LIVE_CATEGORIES.map((c) => c.id).sort();
-    expect(live).toEqual(["crypto", "flights", "reserves", "stocks"]);
+    expect(live).toEqual(["amm", "crypto", "flights", "reserves", "stocks"]);
   });
 
   it("has no duplicate ids", () => {

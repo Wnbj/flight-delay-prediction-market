@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { Address } from "viem";
 import { TOKEN_SYMBOL, txUrl } from "../lib/config";
 import { formatToken, parseToken } from "../lib/format";
@@ -9,7 +9,17 @@ import {
   canRequestSettlement,
   statusLabel,
 } from "../lib/parimutuel";
-import { sendApprove, sendClaim, sendMint, sendRequestSettlement, sendStake, waitForTx } from "../lib/chain";
+import {
+  quoteAmmShares,
+  sendAmmBuy,
+  sendAmmRedeem,
+  sendApprove,
+  sendClaim,
+  sendMint,
+  sendRequestSettlement,
+  sendStake,
+  waitForTx,
+} from "../lib/chain";
 import type { Market, Position, Side } from "../lib/types";
 import type { WalletState } from "../hooks/useWallet";
 
@@ -62,6 +72,57 @@ export function TradePanel({
     } finally {
       setBusy(null);
     }
+  };
+
+  const isAmm = market.categoryId === "amm";
+
+  /**
+   * The AMM's quote, refreshed as the amount changes.
+   *
+   * Fetched from the contract rather than recomputed here: the number shown is
+   * the number `buy` will return, and a UI that re-derives the curve can drift
+   * from the one that actually executes.
+   */
+  const [quotedShares, setQuotedShares] = useState<bigint | null>(null);
+  useEffect(() => {
+    if (!isAmm || !amount || amount <= 0n) {
+      setQuotedShares(null);
+      return;
+    }
+    let cancelled = false;
+    void quoteAmmShares(market, side === "yes", amount)
+      .then((q) => {
+        if (!cancelled) setQuotedShares(q);
+      })
+      .catch(() => {
+        if (!cancelled) setQuotedShares(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isAmm, market, side, amount]);
+
+  const doBuy = async () => {
+    if (!account || !amount) return;
+    if (allowance < amount) {
+      setBusy("approving");
+      setError(null);
+      try {
+        const h = await sendApprove(account, market.contract, amount);
+        setLastTx(h);
+        await waitForTx(h);
+      } catch (e) {
+        setError(friendlyError(e));
+        setBusy(null);
+        return;
+      }
+    }
+    // Re-quote immediately before submitting and allow 1% below it. Quoting at
+    // render time and submitting minutes later would either revert constantly
+    // or, with no bound at all, fill at whatever the curve had moved to.
+    const fresh = await quoteAmmShares(market, side === "yes", amount);
+    const minOut = (fresh * 99n) / 100n;
+    await run("staking", (a) => sendAmmBuy(a, market, side === "yes", amount, minOut));
   };
 
   const doStake = async () => {
@@ -160,15 +221,49 @@ export function TradePanel({
             </div>
           </div>
 
-          <div
-            className="muted-strong"
-            style={{ display: "flex", justifyContent: "space-between", fontSize: 11 }}
-          >
-            <span>Est. payout if {side === "yes" ? "Yes" : "No"}</span>
-            <span style={{ color: "var(--color-text)" }}>
-              {estimate ? formatToken(estimate.payout) : "—"}
-            </span>
-          </div>
+          {isAmm ? (
+            <>
+              <div
+                className="muted-strong"
+                style={{ display: "flex", justifyContent: "space-between", fontSize: 11 }}
+              >
+                <span>Shares</span>
+                <span style={{ color: "var(--color-text)" }}>
+                  {quotedShares === null ? "—" : formatToken(quotedShares)}
+                </span>
+              </div>
+              <div
+                className="muted-strong"
+                style={{ display: "flex", justifyContent: "space-between", fontSize: 11 }}
+              >
+                <span>Price per share</span>
+                <span style={{ color: "var(--color-text)" }}>
+                  {quotedShares && quotedShares > 0n && amount
+                    ? `${(Number((amount * 10_000n) / quotedShares) / 100).toFixed(1)}¢`
+                    : "—"}
+                </span>
+              </div>
+              <div
+                className="muted-strong"
+                style={{ display: "flex", justifyContent: "space-between", fontSize: 11 }}
+              >
+                <span>Payout if {side === "yes" ? "Yes" : "No"}</span>
+                <span style={{ color: "var(--color-text)" }}>
+                  {quotedShares === null ? "—" : formatToken(quotedShares)}
+                </span>
+              </div>
+            </>
+          ) : (
+            <div
+              className="muted-strong"
+              style={{ display: "flex", justifyContent: "space-between", fontSize: 11 }}
+            >
+              <span>Est. payout if {side === "yes" ? "Yes" : "No"}</span>
+              <span style={{ color: "var(--color-text)" }}>
+                {estimate ? formatToken(estimate.payout) : "—"}
+              </span>
+            </div>
+          )}
 
           {estimate?.refundOnly && (
             <div style={{ fontSize: 11, color: "var(--color-accent-300)" }}>
@@ -178,8 +273,9 @@ export function TradePanel({
           )}
 
           <p className="muted-strong" style={{ fontSize: 11, margin: 0 }}>
-            Parimutuel: your share of the whole pot is fixed at settlement, so this estimate moves
-            as others stake.
+            {isAmm
+              ? "Each share pays 1 mUSDC if you are right. The price is locked when you buy — later trades cannot change what you already hold. Submitted with a 1% slippage bound."
+              : "Parimutuel: your share of the whole pot is fixed at settlement, so this estimate moves as others stake."}
           </p>
 
           {insufficient && (
@@ -192,20 +288,27 @@ export function TradePanel({
             className="btn btn-accent"
             style={{ width: "100%" }}
             disabled={!amount || amount <= 0n || insufficient || busy !== null || wallet.wrongNetwork}
-            onClick={() => void doStake()}
+            onClick={() => void (isAmm ? doBuy() : doStake())}
           >
             {busy === "approving"
               ? "Approving…"
               : busy === "staking"
-                ? "Staking…"
+                ? isAmm
+                  ? "Buying…"
+                  : "Staking…"
                 : needsApproval
-                  ? "Approve & stake"
-                  : "Place stake"}
+                  ? isAmm
+                    ? "Approve & buy"
+                    : "Approve & stake"
+                  : isAmm
+                    ? "Buy shares"
+                    : "Place stake"}
           </button>
         </>
       ) : (
         <div className="muted" style={{ fontSize: 13 }}>
-          Staking is closed — market is {statusLabel(market.status).toLowerCase()}.
+          {isAmm ? "Trading" : "Staking"} is closed — market is{" "}
+          {statusLabel(market.status).toLowerCase()}.
         </div>
       )}
 
@@ -226,15 +329,22 @@ export function TradePanel({
           className="btn btn-accent"
           style={{ width: "100%" }}
           disabled={busy !== null}
-          onClick={() => void run("claiming", (a) => sendClaim(a, market))}
+          onClick={() =>
+            void run("claiming", (a) => (isAmm ? sendAmmRedeem(a, market) : sendClaim(a, market)))
+          }
         >
-          {busy === "claiming" ? "Claiming…" : `Claim ${formatToken(position.claimable)}`}
+          {busy === "claiming"
+            ? isAmm
+              ? "Redeeming…"
+              : "Claiming…"
+            : `${isAmm ? "Redeem" : "Claim"} ${formatToken(position.claimable)}`}
         </button>
       )}
 
       {position && (
         <div className="muted-strong" style={{ fontSize: 11, borderTop: "1px solid var(--color-divider)", paddingTop: "var(--space-2)" }}>
-          Your stake: {formatToken(position.yes)} Yes · {formatToken(position.no)} No
+          {isAmm ? "Your shares" : "Your stake"}: {formatToken(position.yes)} Yes ·{" "}
+          {formatToken(position.no)} No
         </div>
       )}
 

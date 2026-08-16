@@ -48,7 +48,10 @@ export default function App() {
   const liveSymbols = useMemo(
     () =>
       data.markets.flatMap((m) =>
-        m.categoryId === "crypto" && m.status === MarketStatus.Open ? [m.asset] : [],
+        (m.categoryId === "crypto" || m.categoryId === "amm") &&
+        m.status === MarketStatus.Open
+          ? [m.asset]
+          : [],
       ),
     [data.markets],
   );

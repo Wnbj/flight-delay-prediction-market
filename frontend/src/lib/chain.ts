@@ -8,6 +8,7 @@ import {
 } from "viem";
 import { getActiveProvider } from "./providers";
 import {
+  AMM_MARKET_ADDRESS,
   chain,
   CRYPTO_MARKET_ADDRESS,
   DEPLOY_BLOCK,
@@ -18,6 +19,7 @@ import {
   TOKEN_ADDRESS,
 } from "./config";
 import {
+  ammMarketAbi,
   cryptoMarketAbi,
   flightMarketAbi,
   mockUsdcAbi,
@@ -52,6 +54,7 @@ const marketContract = { address: MARKET_ADDRESS, abi: flightMarketAbi } as cons
 const cryptoContract = { address: CRYPTO_MARKET_ADDRESS, abi: cryptoMarketAbi } as const;
 const stockContract = { address: STOCK_MARKET_ADDRESS, abi: stockMarketAbi } as const;
 const reserveContract = { address: RESERVE_MARKET_ADDRESS, abi: reserveMarketAbi } as const;
+const ammContract = { address: AMM_MARKET_ADDRESS, abi: ammMarketAbi } as const;
 const tokenContract = { address: TOKEN_ADDRESS, abi: mockUsdcAbi } as const;
 
 /** Market ids restart at 0 per contract, so identity has to carry the category. */
@@ -66,6 +69,8 @@ export function contractFor(market: Market) {
       return stockContract;
     case "reserves":
       return reserveContract;
+    case "amm":
+      return ammContract;
     default:
       return marketContract;
   }
@@ -116,6 +121,18 @@ async function readFlightMarkets(): Promise<Market[]> {
 }
 
 const ASSET_SYMBOLS = ["BTC", "ETH"] as const;
+
+/**
+ * AmmMarket.Status -> MarketStatus. It has no Locked state, so the numbers do
+ * not line up with the parimutuel enum and a plain cast would report a
+ * settlement-requested market as merely locked.
+ */
+const AMM_STATUS: Record<number, MarketStatus> = {
+  0: MarketStatus.Open,
+  1: MarketStatus.SettlementRequested,
+  2: MarketStatus.Settled,
+  3: MarketStatus.Void,
+};
 
 async function readCryptoMarkets(): Promise<Market[]> {
   const n = Number(
@@ -286,15 +303,72 @@ async function readFeedMarkets(
   });
 }
 
+async function readAmmMarkets(): Promise<Market[]> {
+  const n = Number(
+    (await publicClient.readContract({
+      ...ammContract,
+      functionName: "marketCount",
+    })) as bigint,
+  );
+  if (n === 0) return [];
+
+  const results = await publicClient.multicall({
+    contracts: Array.from({ length: n }, (_, i) => i).flatMap((i) => [
+      { ...ammContract, functionName: "terms" as const, args: [BigInt(i)] as const },
+      { ...ammContract, functionName: "pool" as const, args: [BigInt(i)] as const },
+      { ...ammContract, functionName: "yesPriceBps" as const, args: [BigInt(i)] as const },
+    ]),
+    allowFailure: false,
+  });
+
+  return Array.from({ length: n }, (_, i) => {
+    const t = results[i * 3] as unknown as [string, number, bigint, bigint, bigint, bigint];
+    const p = results[i * 3 + 1] as unknown as [
+      number, number, bigint, `0x${string}`, `0x${string}`, bigint, bigint, bigint,
+    ];
+    const priceBps = Number(results[i * 3 + 2] as unknown as bigint);
+
+    return {
+      id: i,
+      key: marketKey("amm", i),
+      contract: AMM_MARKET_ADDRESS,
+      categoryId: "amm",
+      question: t[0],
+      asset: ASSET_SYMBOLS[Number(t[1])] ?? "BTC",
+      strikePrice: t[2],
+      closeTime: Number(t[3]),
+      expiryTime: Number(t[4]),
+      settleAfter: Number(t[5]),
+      // AmmMarket has its own Status enum without a Locked state, so the two
+      // are mapped rather than cast: its 1 is SettlementRequested, not Locked.
+      status: AMM_STATUS[p[0]] ?? MarketStatus.Open,
+      outcome: Number(p[1]) as Outcome,
+      observedPrice: p[2],
+      evidenceHash: p[3],
+      maker: p[4],
+      yesReserve: p[5],
+      noReserve: p[6],
+      collateral: p[7],
+      yesPriceBps: priceBps,
+      // MarketBase's pool fields carry the reserves so shared components have
+      // something to render, but nothing may read the ODDS off them — see
+      // impliedYesPercent, which special-cases this category for that reason.
+      yesPool: p[5],
+      noPool: p[6],
+    } satisfies Market;
+  });
+}
+
 /** Every market across every deployed market contract. */
 export async function readMarkets(): Promise<Market[]> {
-  const [flights, crypto, stocks, reserves] = await Promise.all([
+  const [flights, crypto, stocks, reserves, amm] = await Promise.all([
     readFlightMarkets(),
     readCryptoMarkets(),
     readFeedMarkets(STOCK_MARKET_ADDRESS, "stocks"),
     readFeedMarkets(RESERVE_MARKET_ADDRESS, "reserves"),
+    readAmmMarkets(),
   ]);
-  return [...flights, ...crypto, ...stocks, ...reserves];
+  return [...flights, ...crypto, ...stocks, ...reserves, ...amm];
 }
 
 export interface WalletStake {
@@ -311,27 +385,93 @@ export async function readWalletStakes(
   const out = new Map<string, WalletStake>();
   if (markets.length === 0) return out;
 
-  const calls = markets.flatMap((m) => {
-    const c = contractFor(m);
-    const id = BigInt(m.id);
-    return [
-      { ...c, functionName: "yesStake" as const, args: [id, user] as const },
-      { ...c, functionName: "noStake" as const, args: [id, user] as const },
-      { ...c, functionName: "claimed" as const, args: [id, user] as const },
-    ];
-  });
+  // The AMM names the same three things differently, because they are
+  // different things: you hold SHARES you bought, not a STAKE you placed, and
+  // you REDEEM them rather than claiming a share of a pot.
+  const holdingAbi = [
+    {
+      type: "function",
+      name: "yesShares",
+      inputs: [
+        { name: "", type: "uint256" },
+        { name: "", type: "address" },
+      ],
+      outputs: [{ name: "", type: "uint256" }],
+      stateMutability: "view",
+    },
+    {
+      type: "function",
+      name: "noShares",
+      inputs: [
+        { name: "", type: "uint256" },
+        { name: "", type: "address" },
+      ],
+      outputs: [{ name: "", type: "uint256" }],
+      stateMutability: "view",
+    },
+    {
+      type: "function",
+      name: "redeemed",
+      inputs: [
+        { name: "", type: "uint256" },
+        { name: "", type: "address" },
+      ],
+      outputs: [{ name: "", type: "bool" }],
+      stateMutability: "view",
+    },
+  ] as const;
 
-  const res = await publicClient.multicall({ contracts: calls, allowFailure: false });
+  const parimutuel = markets.filter((m) => m.categoryId !== "amm");
+  const amm = markets.filter((m) => m.categoryId === "amm");
 
-  markets.forEach((m, i) => {
+  const [pRes, aRes] = await Promise.all([
+    parimutuel.length === 0
+      ? Promise.resolve([] as unknown[])
+      : publicClient.multicall({
+          contracts: parimutuel.flatMap((m) => {
+            const c = contractFor(m);
+            const id = BigInt(m.id);
+            return [
+              { ...c, functionName: "yesStake" as const, args: [id, user] as const },
+              { ...c, functionName: "noStake" as const, args: [id, user] as const },
+              { ...c, functionName: "claimed" as const, args: [id, user] as const },
+            ];
+          }),
+          allowFailure: false,
+        }),
+    amm.length === 0
+      ? Promise.resolve([] as unknown[])
+      : publicClient.multicall({
+          contracts: amm.flatMap((m) => {
+            const c = { address: m.contract, abi: holdingAbi } as const;
+            const id = BigInt(m.id);
+            return [
+              { ...c, functionName: "yesShares" as const, args: [id, user] as const },
+              { ...c, functionName: "noShares" as const, args: [id, user] as const },
+              { ...c, functionName: "redeemed" as const, args: [id, user] as const },
+            ];
+          }),
+          allowFailure: false,
+        }),
+  ]);
+
+  parimutuel.forEach((m, i) => {
     out.set(m.key, {
-      yes: res[i * 3] as bigint,
-      no: res[i * 3 + 1] as bigint,
-      claimed: res[i * 3 + 2] as boolean,
+      yes: pRes[i * 3] as bigint,
+      no: pRes[i * 3 + 1] as bigint,
+      claimed: pRes[i * 3 + 2] as boolean,
+    });
+  });
+  amm.forEach((m, i) => {
+    out.set(m.key, {
+      yes: aRes[i * 3] as bigint,
+      no: aRes[i * 3 + 1] as bigint,
+      claimed: aRes[i * 3 + 2] as boolean,
     });
   });
   return out;
 }
+
 
 export async function readTokenBalance(user: Address): Promise<bigint> {
   return (await publicClient.readContract({
@@ -560,6 +700,96 @@ export async function sendStake(
     abi: marketWriteAbi,
     functionName: "stake",
     args: [BigInt(market.id), isYes, amount] as const,
+    chain,
+    account,
+  });
+}
+
+const ammWriteAbi = [
+  {
+    type: "function",
+    name: "buy",
+    inputs: [
+      { name: "marketId", type: "uint256" },
+      { name: "isYes", type: "bool" },
+      { name: "collateralIn", type: "uint256" },
+      { name: "minSharesOut", type: "uint256" },
+    ],
+    outputs: [{ name: "", type: "uint256" }],
+    stateMutability: "nonpayable",
+  },
+  {
+    type: "function",
+    name: "redeem",
+    inputs: [{ name: "marketId", type: "uint256" }],
+    outputs: [],
+    stateMutability: "nonpayable",
+  },
+  {
+    type: "function",
+    name: "quote",
+    inputs: [
+      { name: "marketId", type: "uint256" },
+      { name: "isYes", type: "bool" },
+      { name: "collateralIn", type: "uint256" },
+    ],
+    outputs: [{ name: "", type: "uint256" }],
+    stateMutability: "view",
+  },
+  { type: "error", name: "SlippageTooHigh", inputs: [] },
+  { type: "error", name: "TooLate", inputs: [] },
+  { type: "error", name: "BadStatus", inputs: [] },
+  { type: "error", name: "NothingToRedeem", inputs: [] },
+  { type: "error", name: "AlreadyRedeemed", inputs: [] },
+] as const;
+
+/** Shares `collateralIn` buys right now — the exact number `buy` will return. */
+export async function quoteAmmShares(
+  market: Market,
+  isYes: boolean,
+  collateralIn: bigint,
+): Promise<bigint> {
+  if (market.categoryId !== "amm" || collateralIn <= 0n) return 0n;
+  return (await publicClient.readContract({
+    address: market.contract,
+    abi: ammWriteAbi,
+    functionName: "quote",
+    args: [BigInt(market.id), isYes, collateralIn],
+  })) as bigint;
+}
+
+/**
+ * Buy AMM shares.
+ *
+ * `minSharesOut` is required by the contract rather than optional, because the
+ * price moves with the size of the trade itself — a caller who has not stated
+ * a bound has not been asked to think about one.
+ */
+export async function sendAmmBuy(
+  account: Address,
+  market: Market,
+  isYes: boolean,
+  collateralIn: bigint,
+  minSharesOut: bigint,
+) {
+  const wallet = walletClientFor(account);
+  return wallet.writeContract({
+    address: market.contract,
+    abi: ammWriteAbi,
+    functionName: "buy",
+    args: [BigInt(market.id), isYes, collateralIn, minSharesOut] as const,
+    chain,
+    account,
+  });
+}
+
+export async function sendAmmRedeem(account: Address, market: Market) {
+  const wallet = walletClientFor(account);
+  return wallet.writeContract({
+    address: market.contract,
+    abi: ammWriteAbi,
+    functionName: "redeem",
+    args: [BigInt(market.id)] as const,
     chain,
     account,
   });

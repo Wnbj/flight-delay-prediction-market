@@ -13,15 +13,30 @@ import { MarketStatus, Outcome, type Market, type Side } from "./types";
  * match what `claim()` actually transfers, down to the last unit.
  */
 
-/** Current implied probability of Yes, 0–100. Null when nothing is staked yet. */
+/**
+ * Current implied probability of Yes, 0–100. Null when nothing is staked yet.
+ *
+ * An AMM market is read from its quoted price, NOT from its reserves. In a
+ * constant-product pool the price of YES is the *opposite* reserve over the
+ * total — the scarcer YES is, the dearer it is — so applying the parimutuel
+ * ratio to those numbers reports the odds exactly inverted.
+ */
 export function impliedYesPercent(m: Market): number | null {
+  if (m.categoryId === "amm") return m.yesPriceBps / 100;
   const total = m.yesPool + m.noPool;
   if (total === 0n) return null;
   return Number((m.yesPool * 10000n) / total) / 100;
 }
 
-/** Total staked across both sides. */
+/**
+ * The money actually at stake.
+ *
+ * For an AMM that is the collateral, not the sum of the reserves: one unit of
+ * collateral mints one YES *and* one NO, so adding the two reserves counts the
+ * same money twice.
+ */
 export function totalPool(m: Market): bigint {
+  if (m.categoryId === "amm") return m.collateral;
   return m.yesPool + m.noPool;
 }
 
@@ -31,7 +46,10 @@ export function totalPool(m: Market): bigint {
  * before someone stakes into a market that can only refund.
  */
 export function isOneSided(m: Market): boolean {
-  const total = totalPool(m);
+  // An AMM market has no such failure: every share is individually
+  // collateralised, so it settles correctly even with no trades at all.
+  if (m.categoryId === "amm") return false;
+  const total = m.yesPool + m.noPool;
   return total > 0n && (m.yesPool === 0n || m.noPool === 0n);
 }
 
@@ -93,6 +111,18 @@ export function claimablePayout(
   yesStake: bigint,
   noStake: bigint,
 ): bigint {
+  // AMM shares are worth one unit each if they win — no proportional split,
+  // because each was collateralised individually when it was minted. A void
+  // pays half a unit per share either side, which is the only division that
+  // stays solvent when one unit of collateral backs one share of each side.
+  if (m.categoryId === "amm") {
+    if (m.status === MarketStatus.Void) return (yesStake + noStake) / 2n;
+    if (m.status !== MarketStatus.Settled) return 0n;
+    if (m.outcome === Outcome.Yes) return yesStake;
+    if (m.outcome === Outcome.No) return noStake;
+    return 0n;
+  }
+
   if (m.status === MarketStatus.Void) {
     return yesStake + noStake;
   }

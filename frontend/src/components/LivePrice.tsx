@@ -17,10 +17,12 @@ export function LivePrice({
   market: Market;
   size?: number;
 }) {
-  const symbol = market.categoryId === "crypto" ? market.asset : null;
+  const symbol =
+    market.categoryId === "crypto" || market.categoryId === "amm" ? market.asset : null;
   const spot = useSpotPrice(symbol);
 
-  if (symbol === null || market.categoryId !== "crypto") return null;
+  if (symbol === null || (market.categoryId !== "crypto" && market.categoryId !== "amm"))
+    return null;
   if (market.status !== MarketStatus.Open) return null;
   if (spot === null) return null;
 

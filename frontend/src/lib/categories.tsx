@@ -4,8 +4,8 @@ import type { CategoryId } from "./types";
 /**
  * Category registry — the extension point for new market types.
  *
- * `flights`, `crypto`, `stocks` and `reserves` are live, each backed by its
- * own contract. The rest
+ * `flights`, `crypto`, `stocks`, `reserves` and `amm` are live, each backed by
+ * its own contract. The rest
  * are declared but disabled: they render in the UI as "coming soon" rather
  * than being hidden, so the shape of the product is visible without inventing
  * markets that do not exist.
@@ -102,6 +102,16 @@ const reservesIcon = (size: number) => (
   </svg>
 );
 
+const ammIcon = (size: number) => (
+  <svg viewBox="0 0 64 64" width={size} height={size} aria-hidden="true">
+    <circle cx="32" cy="32" r="20" fill="none" stroke="var(--color-accent)" strokeWidth="1.6" />
+    <path d="M20 42c8 0 8-20 24-20" fill="none" stroke="var(--color-accent)" strokeWidth="1.8"
+      strokeLinecap="round" />
+    <circle cx="20" cy="42" r="2.6" fill="var(--color-accent)" />
+    <circle cx="44" cy="22" r="2.6" fill="var(--color-accent)" />
+  </svg>
+);
+
 const popIcon = (size: number) => (
   <svg viewBox="0 0 64 64" width={size} height={size} aria-hidden="true">
     <circle cx="32" cy="32" r="20" fill="none" stroke="var(--color-accent)" strokeWidth="1.6" />
@@ -161,6 +171,14 @@ export const CATEGORIES: CategoryDef[] = [
     live: true,
     blurb: "Proof-of-Reserve and fund NAV levels, settled from Chainlink feeds.",
     icon: reservesIcon,
+  },
+  {
+    id: "amm",
+    name: "AMM",
+    tagStyle: TAG.outline,
+    live: true,
+    blurb: "Same questions, priced by a market maker — your price is locked when you buy.",
+    icon: ammIcon,
   },
   {
     id: "pop",

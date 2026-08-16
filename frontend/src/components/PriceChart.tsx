@@ -22,9 +22,15 @@ const RANGES: RangeKey[] = ["1H", "4H", "1D", "1W", "1M"];
  * the oracle actually saw.
  */
 export function PriceChart({ market }: { market: Market }) {
-  const [range, setRange] = useState<RangeKey>(market.categoryId === "crypto" ? "1H" : "1W");
+  const [range, setRange] = useState<RangeKey>(
+    market.categoryId === "crypto" || market.categoryId === "amm" ? "1H" : "1W",
+  );
 
-  const symbol = market.categoryId === "crypto" ? market.asset : null;
+  // An AMM market names a crypto asset and settles from the same exchange
+  // data, so it charts candles — the AMM is how it is PRICED, not what it is
+  // about. Only the feed-settled categories chart feed rounds.
+  const symbol =
+    market.categoryId === "crypto" || market.categoryId === "amm" ? market.asset : null;
   // Both feed-settled categories, not just stocks — reserves are read the
   // same way and were silently getting no chart at all.
   const feed =

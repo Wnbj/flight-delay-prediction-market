@@ -21,6 +21,7 @@ export type CategoryId =
   | "crypto"
   | "stocks"
   | "reserves"
+  | "amm"
   | "pop"
   | "current";
 
@@ -104,13 +105,48 @@ export interface ReserveMarket extends MarketBase {
   observedPrice: bigint;
 }
 
-export type Market = FlightMarket | CryptoMarket | StockMarket | ReserveMarket;
+/**
+ * A market priced by an automated market maker rather than a parimutuel pool.
+ *
+ * The shape differs in a way that matters: `yesReserve`/`noReserve` are SHARES
+ * THE POOL HOLDS, not money staked on a side, and the price of YES is the
+ * OPPOSITE reserve over the total — the scarcer YES is in the pool, the dearer
+ * it is. Reading these two like parimutuel pools inverts the odds, which is
+ * why `yesPriceBps` is carried explicitly and read from the contract rather
+ * than derived here.
+ */
+export interface AmmMarket extends MarketBase {
+  categoryId: "amm";
+  asset: "BTC" | "ETH";
+  strikePrice: bigint;
+  expiryTime: number;
+  /** Marginal price of YES, 0–10000. Also the price a small buy executes at. */
+  yesPriceBps: number;
+  yesReserve: bigint;
+  noReserve: bigint;
+  /** Complete sets minted — the money actually at stake in this market. */
+  collateral: bigint;
+  maker: `0x${string}`;
+  observedPrice: bigint;
+}
+
+export type Market =
+  | FlightMarket
+  | CryptoMarket
+  | StockMarket
+  | ReserveMarket
+  | AmmMarket;
 
 /** Markets whose terms are a price against a strike, whatever the asset. */
-export type PriceMarket = CryptoMarket | StockMarket | ReserveMarket;
+export type PriceMarket = CryptoMarket | StockMarket | ReserveMarket | AmmMarket;
 
 export function isPriceMarket(m: Market): m is PriceMarket {
-  return m.categoryId === "crypto" || m.categoryId === "stocks" || m.categoryId === "reserves";
+  return (
+    m.categoryId === "crypto" ||
+    m.categoryId === "stocks" ||
+    m.categoryId === "reserves" ||
+    m.categoryId === "amm"
+  );
 }
 
 /**
@@ -119,7 +155,7 @@ export function isPriceMarket(m: Market): m is PriceMarket {
  * the label has to come from different places.
  */
 export function priceAssetLabel(m: PriceMarket): string {
-  return m.categoryId === "crypto" ? m.asset : m.symbol;
+  return m.categoryId === "crypto" || m.categoryId === "amm" ? m.asset : m.symbol;
 }
 
 export interface StakeEvent {
