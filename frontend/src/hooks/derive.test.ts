@@ -288,6 +288,26 @@ describe("derivePositions — cost basis", () => {
   });
 
   /**
+   * The invariant the portfolio's "claimable" filter leans on: `claimable`
+   * stays above zero while EITHER half is outstanding. Filtering on the shares
+   * flag as well hid a live pool claim from the one screen meant to find it.
+   */
+  it("still reports a pool claim once the shares have been redeemed", () => {
+    const lpEvents = [deposit(alice, 40_000_000n, 40_000_000n, 40_000_000n)];
+    const [p] = derivePositions(
+      [ammMarket],
+      held(26_666_667n, 0n, true),
+      [],
+      alice,
+      lpEvents,
+      provided(40_000_000n, 40_000_000n, 13_333_333n),
+    );
+
+    expect(p!.claimed).toBe(true);
+    expect(p!.claimable).toBe(13_333_333n);
+  });
+
+  /**
    * Same split as `claimable` vs `entitlement`: redeeming the shares must not
    * erase the record of what they were worth, or P&L reads flat on a win.
    */

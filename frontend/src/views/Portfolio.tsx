@@ -63,7 +63,14 @@ export function Portfolio({
 
   const filtered = useMemo(() => {
     if (filter === "all") return positions;
-    if (filter === "claimable") return positions.filter((p) => p.claimable > 0n && !p.claimed);
+    /*
+     * `claimable` already answers both halves of the question — it is zero
+     * once the shares are redeemed AND the pool is withdrawn, and non-zero
+     * while either is outstanding. Adding `!p.claimed` on top gated the whole
+     * row on the SHARES flag, so redeeming first hid a pool claim that was
+     * still sitting there, on the one screen whose job is to find it.
+     */
+    if (filter === "claimable") return positions.filter((p) => p.claimable > 0n);
     if (filter === "open")
       return positions.filter(
         (p) =>
@@ -215,8 +222,10 @@ export function Portfolio({
                   p.market.status === MarketStatus.Void;
                 const pl = resolved ? p.entitlement - size : null;
                 // What `redeem`/`claim` alone would pay: the pool slice is a
-                // separate call and must not gate this button.
-                const shareClaim = p.entitlement - (p.lp?.poolValue ?? 0n);
+                // separate call and must not gate this button. This row had
+                // the rule right before `shareClaimable` existed and derived
+                // it by hand; the field now says it once, for every caller.
+                const shareClaim = p.shareClaimable;
                 const side = p.lp
                   ? p.yes > 0n || p.no > 0n
                     ? `LP + ${p.yes > 0n ? "Yes" : "No"}`
@@ -275,7 +284,7 @@ export function Portfolio({
                       * and strand the other for good.
                       */}
                     <td style={{ display: "flex", gap: 6 }}>
-                      {shareClaim > 0n && !p.claimed && (
+                      {shareClaim > 0n && (
                         <button
                           className="btn btn-accent"
                           style={{ padding: "4px 10px", fontSize: 13 }}
