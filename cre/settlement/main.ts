@@ -119,6 +119,26 @@ const OUTCOME_YES = 1
 const OUTCOME_NO = 2
 const OUTCOME_VOID = 3
 
+/**
+ * A narrow Solidity integer, ready for viem's encoder.
+ *
+ * viem's types declare plain `number` for the small widths (`uint8`, `int32`),
+ * so the cast back is only to satisfy TypeScript — the value handed to the
+ * encoder is a bigint. That matters because viem range-checks with
+ * `value < min` against a bigint bound, and in this workflow's WASM/QuickJS
+ * runtime a mixed number-vs-bigint comparison is simply wrong for negative
+ * numbers: confirmed against the real runtime, `-33 < -2147483648n` evaluated
+ * to `true` here though not in Node/bun, throwing a spurious
+ * IntegerOutOfRangeError.
+ *
+ * Only negatives have actually bitten, so `outcome` was never in danger. It
+ * goes through here anyway because the SDK's rule is bigint for every Solidity
+ * integer, and one rule holds better than an exception that happens to be safe.
+ * The wide widths (`uint256`, `int256`) are typed `bigint` by viem already and
+ * are passed directly.
+ */
+const abiInt = (n: number | bigint): number => BigInt(n) as unknown as number
+
 // --- event ABI ---------------------------------------------------------------
 // Must match FlightMarket.sol exactly.
 const settlementRequestedAbi = [
@@ -914,17 +934,11 @@ const settleFlightMarket = (runtime: Runtime<Config>, t: FlightTerms): string =>
 
   // Must match onReport's abi.decode: (uint256, uint8, int32, bytes32)
   //
-  // delayMinutes is passed as a BigInt, not the plain `number` viem's types
-  // declare for int32 — the cast below is deliberate. viem's encoder
-  // range-checks with `value < min` against a bigint bound; in this
-  // workflow's WASM/QuickJS runtime that mixed number-vs-bigint comparison
-  // is simply wrong for negative numbers (confirmed directly against the
-  // real runtime: `-33 < -2147483648n` evaluated to `true` here, though not
-  // in Node/bun) and throws a spurious IntegerOutOfRangeError. Passing a
-  // bigint keeps the comparison same-type on both sides and sidesteps it.
+  // delayMinutes is the reason `abiInt` exists — it is the one value here that
+  // goes negative, on a flight that landed early. See the note on `abiInt`.
   const encoded = encodeAbiParameters(
     parseAbiParameters("uint256 marketId, uint8 outcome, int32 delayMinutes, bytes32 evidenceHash"),
-    [marketId, outcome, BigInt(observedDelay) as unknown as number, evidenceHash],
+    [marketId, abiInt(outcome), abiInt(observedDelay), evidenceHash],
   )
 
   const signedReport = runtime.report(prepareReportRequest(encoded)).result()
@@ -1057,7 +1071,7 @@ const settleCryptoMarket = (runtime: Runtime<Config>, t: CryptoTerms): string =>
     parseAbiParameters(
       "uint256 marketId, uint8 outcome, int256 observedValue, bytes32 evidenceHash",
     ),
-    [marketId, outcome, BigInt(observedPrice), evidenceHash],
+    [marketId, abiInt(outcome), BigInt(observedPrice), evidenceHash],
   )
 
   const signedReport = runtime.report(prepareReportRequest(encoded)).result()
@@ -1372,7 +1386,7 @@ const settleStockMarket = (runtime: Runtime<Config>, t: StockTerms): string => {
     parseAbiParameters(
       "uint256 marketId, uint8 outcome, int256 observedValue, bytes32 evidenceHash",
     ),
-    [marketId, outcome, observedPrice, evidenceHash],
+    [marketId, abiInt(outcome), observedPrice, evidenceHash],
   )
 
   const signedReport = runtime.report(prepareReportRequest(encoded)).result()
@@ -1796,7 +1810,7 @@ const settleReserveMarket = (runtime: Runtime<Config>, t: ReserveTerms): string 
     parseAbiParameters(
       "uint256 marketId, uint8 outcome, int256 observedValue, bytes32 evidenceHash",
     ),
-    [marketId, outcome, observedLevel, evidenceHash],
+    [marketId, abiInt(outcome), observedLevel, evidenceHash],
   )
 
   const signedReport = runtime.report(prepareReportRequest(encoded)).result()
