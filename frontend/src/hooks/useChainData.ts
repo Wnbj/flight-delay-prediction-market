@@ -91,6 +91,9 @@ export function derivePositions(
     if (s.yes === 0n && s.no === 0n && !lpStake) return;
 
     let entitlement = claimablePayout(m, s.yes, s.no);
+    // Kept before the pool claim is added below — this is what `redeem()`
+    // alone would pay, and the only honest label for the button that calls it.
+    const shareEntitlement = entitlement;
     let cost = m.categoryId === "amm" ? (netInByMarket.get(m.key) ?? 0n) : s.yes + s.no;
 
     /**
@@ -140,6 +143,8 @@ export function derivePositions(
       claimed: s.claimed,
       claimable,
       entitlement,
+      shareClaimable: s.claimed ? 0n : shareEntitlement,
+      shareEntitlement,
       cost,
       status,
       ...(lp ? { lp } : {}),

@@ -129,7 +129,13 @@ export function LiquidityPanel({
       : 0;
 
   const residualValue = lp ? markShares(market, position?.yes ?? 0n, position?.no ?? 0n) : 0n;
-  const pnl = lp ? lpPnl(lp, resolved ? position?.entitlement ?? 0n : residualValue) : null;
+  /*
+   * `shareEntitlement`, not `entitlement`. `lpPnl` adds the pool claim itself,
+   * and `entitlement` already contains it, so passing the total counted the
+   * pool twice: a provider who got back exactly their deposit was reported up
+   * by the size of their own pool claim, with a matching phantom IL.
+   */
+  const pnl = lp ? lpPnl(lp, resolved ? position?.shareEntitlement ?? 0n : residualValue) : null;
 
   return (
     <aside className="trade-panel" style={{ marginTop: "var(--space-4)" }}>

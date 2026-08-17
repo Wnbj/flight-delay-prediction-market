@@ -261,6 +261,20 @@ export interface Position {
    */
   entitlement: bigint;
   /**
+   * The same two numbers, counting ONLY the shares — no pool claim folded in.
+   *
+   * `claimable` and `entitlement` above are deliberately whole-market totals,
+   * which is what a portfolio row wants: one number per market. Anything that
+   * drives a single BUTTON needs this pair instead, because the two halves are
+   * claimed by two different calls behind two different one-shot guards.
+   * Labelling `redeem()` with the total promises money that call will not pay,
+   * and offering it to a provider holding no shares at all offers a call that
+   * can only revert.
+   */
+  shareClaimable: bigint;
+  /** Owed on the shares alone, claimed or not. See `shareClaimable`. */
+  shareEntitlement: bigint;
+  /**
    * Collateral actually put in, net of anything sold back.
    *
    * NOT `yes + no`. For a parimutuel market the two are the same number, but

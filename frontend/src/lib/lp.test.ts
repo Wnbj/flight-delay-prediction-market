@@ -228,4 +228,29 @@ describe("lpPnl", () => {
     expect(pnl).toBe(0n);
     expect(impermanentLoss).toBe(0n);
   });
+
+  /**
+   * The residual value passed in must be the SHARES alone. `lpPnl` adds the
+   * pool claim itself, so handing it a whole-market entitlement — which
+   * already contains that claim — counts the pool twice and reports a provider
+   * who merely got their deposit back as up by the size of their own claim.
+   * A settled rung: 40 in, 13.333333 left in the pool, 26.666667 in shares.
+   */
+  it("is flat when a settled pool returns exactly the deposit", () => {
+    const settled = {
+      ...lp,
+      deposited: 40_000_000n,
+      poolValue: 13_333_333n,
+      feesEarned: 0n,
+      marked: false,
+    };
+
+    const { value, pnl, impermanentLoss } = lpPnl(settled, 26_666_667n);
+    expect(value).toBe(40_000_000n);
+    expect(pnl).toBe(0n);
+    expect(impermanentLoss).toBe(0n);
+
+    // What the double count looked like: the pool claim, reported as profit.
+    expect(lpPnl(settled, 40_000_000n).pnl).toBe(13_333_333n);
+  });
 });

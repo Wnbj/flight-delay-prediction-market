@@ -439,7 +439,15 @@ export function TradePanel({
         </button>
       )}
 
-      {position && position.claimable > 0n && !position.claimed && (
+      {/*
+        * `shareClaimable`, not `claimable`. The latter is the whole-market
+        * total and folds in the pool claim, which this button does not pay —
+        * that is the Withdraw button in the liquidity panel below. Using the
+        * total here labelled a 26.67 redemption as 40, and offered the button
+        * at all to a provider whose deposit left them no shares, where
+        * `redeem()` can only revert with NothingToRedeem.
+        */}
+      {position && position.shareClaimable > 0n && !position.claimed && (
         <button
           className="btn btn-accent"
           style={{ width: "100%" }}
@@ -452,7 +460,7 @@ export function TradePanel({
             ? isAmm
               ? "Redeeming…"
               : "Claiming…"
-            : `${isAmm ? "Redeem" : "Claim"} ${formatToken(position.claimable)}`}
+            : `${isAmm ? "Redeem" : "Claim"} ${formatToken(position.shareClaimable)}`}
         </button>
       )}
 

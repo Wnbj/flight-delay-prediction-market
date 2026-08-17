@@ -244,6 +244,69 @@ describe("derivePositions — cost basis", () => {
   });
 
   /**
+   * The total is right for a portfolio row and wrong for a button. `redeem()`
+   * pays the shares and nothing else; the pool is a separate call behind a
+   * separate guard. Shipped once as "Redeem 40 mUSDC" on a position that would
+   * have paid 26.67.
+   */
+  it("separates what redeem() pays from what the pool still owes", () => {
+    const lpEvents = [deposit(alice, 40_000_000n, 40_000_000n, 40_000_000n)];
+    const [p] = derivePositions(
+      [ammMarket],
+      held(26_666_667n, 0n),
+      [],
+      alice,
+      lpEvents,
+      provided(40_000_000n, 40_000_000n, 13_333_333n),
+    );
+
+    expect(p!.shareEntitlement).toBe(26_666_667n);
+    expect(p!.shareClaimable).toBe(26_666_667n);
+    // The whole-market totals are unchanged: 26.666667 + 13.333333 = 40.
+    expect(p!.entitlement).toBe(40_000_000n);
+    expect(p!.claimable).toBe(40_000_000n);
+  });
+
+  /**
+   * A pool seeded at even money hands back no shares at all, so there is
+   * nothing to redeem — but the pool claim alone kept `claimable` above zero
+   * and put a Redeem button on screen that could only revert.
+   */
+  it("offers no redemption to a provider whose deposit left no shares", () => {
+    const lpEvents = [deposit(alice, 40_000_000n, 40_000_000n, 40_000_000n)];
+    const [p] = derivePositions(
+      [ammMarket],
+      held(0n, 0n),
+      [],
+      alice,
+      lpEvents,
+      provided(40_000_000n, 40_000_000n, 40_000_000n),
+    );
+
+    expect(p!.shareClaimable).toBe(0n);
+    expect(p!.claimable).toBe(40_000_000n);
+  });
+
+  /**
+   * Same split as `claimable` vs `entitlement`: redeeming the shares must not
+   * erase the record of what they were worth, or P&L reads flat on a win.
+   */
+  it("keeps the share entitlement after redeeming, while share claimable drops", () => {
+    const lpEvents = [deposit(alice, 40_000_000n, 40_000_000n, 40_000_000n)];
+    const [p] = derivePositions(
+      [ammMarket],
+      held(26_666_667n, 0n, true),
+      [],
+      alice,
+      lpEvents,
+      provided(40_000_000n, 40_000_000n, 13_333_333n),
+    );
+
+    expect(p!.shareEntitlement).toBe(26_666_667n);
+    expect(p!.shareClaimable).toBe(0n);
+  });
+
+  /**
    * Two providers split the pool by shares, not evenly. The claim comes from
    * the chain's own `lpPosition`, so this is really asserting that the value
    * is carried through rather than recomputed here.
