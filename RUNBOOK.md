@@ -482,8 +482,26 @@ cre workflow simulate ./settlement --target staging-settings --broadcast \
   --trigger-index 2 --evm-tx-hash <hash> --evm-event-index 0 --non-interactive
 ```
 
-`--trigger-index 2` selects the stock handler; 0 is flights, 1 is crypto. The
-three cron sweeps are 3 (flights), 4 (crypto) and 5 (stocks).
+`--trigger-index 2` selects the stock handler. The full list, with every
+contract address in `config.staging.json` populated:
+
+| index | handler |
+|---|---|
+| 0 | flight log |
+| 1 | crypto log (also serves AMM — same event) |
+| 2 | stock log |
+| 3 | reserve log |
+| 4 | cron sweep, flights |
+| 5 | cron sweep, crypto |
+| 6 | cron sweep, stocks |
+
+**These numbers are positions in a list built at runtime, not fixed ids.**
+`initWorkflow` pushes a handler only when its contract address is non-empty
+(`main.ts`), so emptying `reserveContractAddress` moves every sweep down by
+one. This table has already been wrong once for exactly that reason — the
+reserve handler was added at position 3 and the sweeps shifted underneath the
+line that used to say 3/4/5. Verified 2026-08-17 by running index 5 and 6 and
+reading which sweep announced itself.
 
 ### Verified against historical feed rounds
 
@@ -525,15 +543,18 @@ human calling `requestSettlement()`. If the workflow was down when the event
 fired, or the settlement reverted, the market simply stays stuck — no second
 log is coming.
 
-`onSweep` is a fourth handler on a **cron trigger** (`cron-trigger@1.0.0`,
-already in the SDK). It reads the three market contracts directly and settles
+`onSweep` is a further handler on a **cron trigger** (`cron-trigger@1.0.0`,
+already in the SDK) — three of them now, one per market family. Each reads its
+market contract directly and settles
 anything sitting in `SettlementRequested`, through the *same* settle functions
 the log handlers call — so a market settled by the sweep can never resolve
 differently from one settled by the trigger.
 
 ```bash
+# 4 = flights, 5 = crypto, 6 = stocks. See the table under "Stock and
+# commodity markets" for why these are positions, not fixed ids.
 cre workflow simulate ./settlement --target staging-settings --broadcast \
-  --trigger-index 3 --non-interactive
+  --trigger-index 4 --non-interactive
 ```
 
 It paid for itself on the first run, finding three flight markets (6, 7, 8)
