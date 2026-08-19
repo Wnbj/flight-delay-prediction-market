@@ -1,9 +1,8 @@
 import { category } from "../lib/categories";
 import {
   addressUrl,
-  ATTESTATION_LABEL,
+  attestationFor,
   blockUrl,
-  FORWARDER_ADDRESS,
   txUrl,
 } from "../lib/config";
 import { formatMarketValue, formatTimestamp, formatToken, outcomeLabel, shortAddress } from "../lib/format";
@@ -273,16 +272,24 @@ function AttemptCard({ attempt }: { attempt: Attempt }) {
                 </span>
               </div>
               <BlockLine block={attempt.report.blockNumber} tx={attempt.report.txHash} />
+              {/*
+                * Both read off the report itself, not off config. The page can
+                * show reports from more than one forwarder at once — during a
+                * migration it will — and each must be described by the one that
+                * actually delivered it.
+                */}
               <div className="muted" style={{ fontSize: 11, marginTop: 2 }}>
                 forwarder{" "}
-                <a href={addressUrl(FORWARDER_ADDRESS)} target="_blank" rel="noreferrer">
-                  {shortAddress(FORWARDER_ADDRESS)}
+                <a href={addressUrl(attempt.report.forwarder)} target="_blank" rel="noreferrer">
+                  {shortAddress(attempt.report.forwarder)}
                 </a>{" "}
                 · execution <span title={attempt.report.workflowExecutionId}>
                   {attempt.report.workflowExecutionId.slice(0, 10)}…
                 </span>
               </div>
-              <div className="muted" style={{ fontSize: 11 }}>{ATTESTATION_LABEL}</div>
+              <div className="muted" style={{ fontSize: 11 }}>
+                {attestationFor(attempt.report.forwarder)}
+              </div>
             </>
           )
         }

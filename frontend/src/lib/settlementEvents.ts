@@ -4,7 +4,7 @@ import {
   CRYPTO_MARKET_ADDRESS,
   DEPLOY_BLOCK,
   FLIGHT_MARKET_ADDRESS,
-  FORWARDER_ADDRESS,
+  KNOWN_FORWARDERS,
   RESERVE_MARKET_ADDRESS,
   STOCK_MARKET_ADDRESS,
 } from "./config";
@@ -161,6 +161,11 @@ export interface ReportLog extends LogBase {
   receiver: `0x${string}`;
   category: CategoryId | null;
   accepted: boolean;
+  /**
+   * The forwarder that emitted this — how the report was attested follows from
+   * it, so it travels with the log rather than being read off config later.
+   */
+  forwarder: `0x${string}`;
   workflowExecutionId: `0x${string}`;
   reportId: `0x${string}`;
 }
@@ -336,7 +341,7 @@ export async function readSettlementLogs(
     run<ReportLog>("report", async () => {
       const logs = await scan((fromBlock, toBlock) =>
         publicClient.getLogs({
-          address: FORWARDER_ADDRESS,
+          address: KNOWN_FORWARDERS,
           event: REPORT_PROCESSED_EVENT,
           args: { receiver: [...RECEIVER_ADDRESSES] },
           fromBlock,
@@ -348,6 +353,7 @@ export async function readSettlementLogs(
         receiver: l.args.receiver!,
         category: categoryOf(l.args.receiver!),
         accepted: l.args.result!,
+        forwarder: l.address,
         workflowExecutionId: l.args.workflowExecutionId!,
         reportId: l.args.reportId!,
         blockNumber: l.blockNumber!,

@@ -9,7 +9,11 @@ import type {
 } from "./settlementEvents";
 import { Outcome, type LpEvent, type Market } from "./types";
 import { amm0, crypto0, flight0 } from "./identity.test";
-import { CRYPTO_MARKET_ADDRESS, AMM_MARKET_ADDRESS } from "./config";
+import { CRYPTO_MARKET_ADDRESS, AMM_MARKET_ADDRESS,
+  attestationFor,
+  DON_FORWARDER,
+  MOCK_FORWARDER,
+} from "./config";
 
 /**
  * Folding settlement logs into what happened.
@@ -46,11 +50,13 @@ const report = (
   accepted: boolean,
   block: bigint,
   txHash = tx(),
+  forwarder: `0x${string}` = MOCK_FORWARDER as `0x${string}`,
 ): ReportLog => ({
   kind: "report",
   receiver,
   category,
   accepted,
+  forwarder,
   workflowExecutionId: `0x${"1".repeat(64)}`,
   reportId: "0x0001",
   blockNumber: block,
@@ -117,6 +123,38 @@ describe("buildPipelines", () => {
    * The reason this module exists. Without the forwarder log there is nothing
    * at all to show, and the market looks like it is still being worked on.
    */
+  /**
+   * A migration to a real DON is not a switchover — the mock keeps delivering
+   * whatever was already in flight while new reports arrive from the
+   * production forwarder. The feed has to show both, and describe each by the
+   * forwarder that actually delivered it rather than by one global setting.
+   */
+  it("keeps two forwarders apart, and lets each describe itself", () => {
+    const a = tx();
+    const b = tx();
+    const { attempts } = build([
+      requested(crypto0.key, 100n),
+      report(CRYPTO_MARKET_ADDRESS, "crypto", true, 114n, a, MOCK_FORWARDER as `0x${string}`),
+      settled(crypto0.key, 114n, a),
+      requested("crypto:1", 200n),
+      report(CRYPTO_MARKET_ADDRESS, "crypto", true, 214n, b, DON_FORWARDER as `0x${string}`),
+      settled("crypto:1", 214n, b),
+    ]);
+
+    const byKey = new Map(attempts.map((x) => [x.marketKey, x]));
+    expect(byKey.get(crypto0.key)!.report!.forwarder).toBe(MOCK_FORWARDER);
+    expect(byKey.get("crypto:1")!.report!.forwarder).toBe(DON_FORWARDER);
+
+    // And the sentence each one earns differs, which is the whole point of
+    // carrying the address instead of reading it off config at render time.
+    expect(attestationFor(byKey.get(crypto0.key)!.report!.forwarder)).toContain(
+      "not DON consensus",
+    );
+    expect(attestationFor(byKey.get("crypto:1")!.report!.forwarder)).toContain(
+      "signed by the DON",
+    );
+  });
+
   it("marks a refused delivery as rejected, not as still waiting", () => {
     const { attempts } = build([
       requested(crypto0.key, 100n),

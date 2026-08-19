@@ -94,6 +94,22 @@ export function attestationFor(forwarder: string): string {
  * One value, used everywhere the question comes up, because a half-changed
  * answer is worse than either answer.
  */
+/**
+ * Every forwarder whose reports might be ours.
+ *
+ * The live feed used to read one — whichever `VITE_FORWARDER_ADDRESS` named —
+ * which is right until the day both are delivering. During a migration to a
+ * real DON the old mock keeps whatever is already in flight while new reports
+ * arrive from the production forwarder, and a feed watching one address would
+ * show half the story with no sign that it was half.
+ *
+ * Reports are attributed per address rather than by this list, so a settlement
+ * carries the claim belonging to the forwarder that actually delivered it.
+ */
+export const KNOWN_FORWARDERS = [
+  ...new Set([FORWARDER_ADDRESS.toLowerCase(), MOCK_FORWARDER, DON_FORWARDER]),
+] as `0x${string}`[];
+
 export const ATTESTATION_LABEL = attestationFor(FORWARDER_ADDRESS);
 
 export const EXPLORER = "https://sepolia.etherscan.io";
