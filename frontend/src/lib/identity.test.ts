@@ -9,6 +9,9 @@ import {
   FLIGHT_MARKET_ADDRESS,
   RESERVE_MARKET_ADDRESS,
   STOCK_MARKET_ADDRESS,
+  attestationFor,
+  DON_FORWARDER,
+  MOCK_FORWARDER,
 } from "./config";
 import { MarketStatus, Outcome, type Market } from "./types";
 
@@ -231,5 +234,42 @@ describe("route registration", () => {
       if (path === "/") continue; // the landing page is the fallback itself
       expect(KNOWN_PATHS.test(path), `${view} -> ${path} would be rewritten to /`).toBe(true);
     }
+  });
+});
+
+/**
+ * The one place this app could lie about its own trust model.
+ *
+ * The claim used to sit in a separate env flag from the address it described,
+ * so an app pointed at the real forwarder could still say "mock" — and would,
+ * on the day someone changed one and forgot the other. Deriving it removes the
+ * gap rather than documenting it.
+ */
+describe("attestationFor", () => {
+  it("calls a mock delivery what it is, and does not call it consensus", () => {
+    const label = attestationFor(MOCK_FORWARDER);
+    expect(label).toContain("not DON consensus");
+    expect(label).toContain("simulate --broadcast");
+  });
+
+  it("claims DON signing only for the production forwarder", () => {
+    expect(attestationFor(DON_FORWARDER)).toContain("signed by the DON");
+  });
+
+  it("ignores case, because addresses arrive checksummed and lowercased", () => {
+    expect(attestationFor(DON_FORWARDER.toUpperCase().replace("0X", "0x"))).toBe(
+      attestationFor(DON_FORWARDER),
+    );
+  });
+
+  /**
+   * The case that matters most: an address nobody has taught it about must not
+   * be guessed into either story.
+   */
+  it("refuses to characterise an unknown forwarder", () => {
+    const label = attestationFor("0x000000000000000000000000000000000000dead");
+    expect(label).toContain("unrecognised");
+    expect(label).not.toContain("DON consensus");
+    expect(label).not.toContain("signed by the DON");
   });
 });

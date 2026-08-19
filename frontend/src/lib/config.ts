@@ -55,27 +55,46 @@ export const FORWARDER_ADDRESS = (import.meta.env.VITE_FORWARDER_ADDRESS ??
   "0x15fC6ae953E024d975e77382eEeC56A9101f9F88") as `0x${string}`;
 
 /**
- * Whether reports are being delivered by a real DON yet.
+ * How a report delivered by a given forwarder was attested.
  *
- * Flipping this is the whole change when deploy access arrives — it decides
- * what the UI is allowed to claim about how a settlement was attested, and
- * nothing else in the app needs to know.
+ * Derived from the forwarder address rather than declared next to it. The two
+ * used to be independent switches — `VITE_FORWARDER_ADDRESS` decided which
+ * contract's logs the app read, and a separate `VITE_DON_DEPLOYED` decided what
+ * it claimed about them — so nothing stopped the app from watching the real
+ * forwarder while still saying "mock", or the reverse. This is the one place
+ * the app could lie about its own trust model, so the claim now follows the
+ * address it is actually reading.
+ *
+ * An unrecognised address says exactly that. Guessing either story for an
+ * unknown forwarder would reintroduce the problem in a quieter form.
  */
-export const DON_DEPLOYED = import.meta.env.VITE_DON_DEPLOYED === "true";
+export const MOCK_FORWARDER = "0x15fc6ae953e024d975e77382eeec56a9101f9f88";
+export const DON_FORWARDER = "0xf8344cfd5c43616a4366c34e3eee75af79a74482";
+
+export function attestationFor(forwarder: string): string {
+  switch (forwarder.toLowerCase()) {
+    case DON_FORWARDER:
+      return "Delivered through the Chainlink CRE forwarder and signed by the DON.";
+    case MOCK_FORWARDER:
+      return (
+        "Delivered through the mock forwarder by `cre workflow simulate --broadcast` — " +
+        "one local execution, not DON consensus. The write and the receiver's checks are real."
+      );
+    default:
+      return (
+        `Delivered through an unrecognised forwarder (${forwarder}). ` +
+        "How this report was attested cannot be stated from the address alone."
+      );
+  }
+}
 
 /**
- * What the UI is allowed to say about how a settlement was attested.
+ * What the UI is allowed to say about how settlements here were attested.
  *
- * One constant, used everywhere the question comes up, because the honest
- * answer changes on a single day and it must not be left half-changed. Today
- * the report is produced by one local execution and broadcast; that is a real
- * on-chain write and a real signature check by the receiver, but it is not
- * consensus, and calling it consensus would be the one place this app lies.
+ * One value, used everywhere the question comes up, because a half-changed
+ * answer is worse than either answer.
  */
-export const ATTESTATION_LABEL = DON_DEPLOYED
-  ? "Delivered through the Chainlink CRE forwarder and signed by the DON."
-  : "Delivered through the mock forwarder by `cre workflow simulate --broadcast` — " +
-    "one local execution, not DON consensus. The write and the receiver's checks are real.";
+export const ATTESTATION_LABEL = attestationFor(FORWARDER_ADDRESS);
 
 export const EXPLORER = "https://sepolia.etherscan.io";
 
