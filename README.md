@@ -227,8 +227,9 @@ have them.
 flights were the only category. The directories are renamed; the **workflow
 name is not**, and deliberately.
 
-`workflow-name: "flight-settlement-staging"` is not a label. Its
-`bytes10(keccak256(...))` is stored in every deployed contract and checked on
+`workflow-name: "flight-settlement-staging"` is not a label. A fingerprint of
+it — `sha256(name)`, hex-encoded, first ten characters, those characters stored
+as `bytes10` — sits in every deployed contract and is checked on
 every report, so renaming it makes all five contracts reject every settlement —
 silently, because the forwarder swallows a failed receiver call into an event
 rather than reverting. It can be changed with five owner calls to

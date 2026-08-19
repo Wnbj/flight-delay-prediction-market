@@ -64,6 +64,30 @@ a failed delivery, not by reading a flag description:**
   no linked owner key (`cre account list-key` → "No linked owners found"). Swap
   this for the real linked owner address once one exists.
 
+### Check it landed, before trusting it
+
+```bash
+cre/preflight.sh staging
+```
+
+Reads every contract in `config.staging.json` and compares three values against
+what the simulate path actually sends: the expected workflow name, the expected
+author, and the forwarder. Read-only — no key, no transaction. Exit status is 0
+only when every row passes.
+
+All three are worth a machine rather than an eye, because all three fail the
+same way: the receiver reverts inside `onReport`, the forwarder swallows it into
+`ReportProcessed(..., success=false)`, the outer transaction succeeds, and the
+CLI prints "Settled" over a market that did not move.
+
+**The name check is the one that is easy to get wrong by hand.** It is not
+`keccak256`. `setExpectedWorkflowName` in `ReceiverTemplate.sol` takes
+`sha256(name)`, hex-encodes it, keeps the first ten characters, and stores those
+characters as `bytes10`. So `flight-settlement-staging` is `2de113ce6d`, stored
+as `0x32646531313363653664`. This repo's own notes said keccak until
+2026-08-19, which is exactly the sort of error a manual byte-for-byte
+comparison confirms rather than catches.
+
 ## 3. Create market, stake both sides, fire the trigger
 
 Both sides **must** be staked — a one-sided book voids in `_processReport`
