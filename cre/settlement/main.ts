@@ -1194,7 +1194,30 @@ const readFeedRound = (
  * The round that was in force at `target` — the most recent one published at
  * or before it. Walks back from `from`, so successive lookups going further
  * into the past can continue from where the last one stopped.
+ *
+ * The walk is separated from the reading so the decision can be examined
+ * without a chain behind it: `read` is handed one round id and returns that
+ * round. This is the function that picked which price settled CSPX — Monday's
+ * 10:04 round at expiry, Sunday's at the close — and it was the last piece of
+ * settlement logic with no test, precisely because it used to be welded to the
+ * `eth_call` that fed it.
  */
+export const walkToRoundInForce = (
+  read: (roundId: bigint) => FeedRound,
+  from: FeedRound,
+  target: number,
+  maxWalk: number = MAX_ROUND_WALK,
+): FeedRound => {
+  let round = from
+  for (let i = 0; i < maxWalk; i++) {
+    // `<=`, not `<`. A round published exactly ON the target was in force at
+    // it, and an equity feed printing at the closing bell is not hypothetical.
+    if (round.updatedAt <= target) return round
+    round = read(round.roundId - 1n)
+  }
+  throw new Error(`No feed round at or before ${target} within ${maxWalk} rounds`)
+}
+
 const roundInForceAt = (
   runtime: Runtime<Config>,
   evmClient: EVMClient,
@@ -1203,14 +1226,12 @@ const roundInForceAt = (
   budget: ReadBudget,
   from: FeedRound,
   target: number,
-): FeedRound => {
-  let round = from
-  for (let i = 0; i < MAX_ROUND_WALK; i++) {
-    if (round.updatedAt <= target) return round
-    round = readFeedRound(runtime, evmClient, feed, atBlock, budget, round.roundId - 1n)
-  }
-  throw new Error(`No feed round at or before ${target} within ${MAX_ROUND_WALK} rounds`)
-}
+): FeedRound =>
+  walkToRoundInForce(
+    (roundId) => readFeedRound(runtime, evmClient, feed, atBlock, budget, roundId),
+    from,
+    target,
+  )
 
 /**
  * Is the round in force at expiry fit to settle on at all?

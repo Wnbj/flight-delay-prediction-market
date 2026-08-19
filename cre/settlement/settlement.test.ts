@@ -9,6 +9,7 @@ import {
   reconcileVenuePrices,
   resolveStockOutcome,
   toScaledPrice,
+  walkToRoundInForce,
   type FeedRound,
 } from "./main"
 
@@ -292,5 +293,96 @@ describe("toScaledPrice", () => {
 
   test("rounds rather than truncating, so a half cent does not vanish", () => {
     expect(toScaledPrice(63_000.000000005)).toBe(6_300_000_000_001)
+  })
+})
+
+
+/**
+ * Which round was in force at a moment.
+ *
+ * This is the piece that actually chose CSPX's settlement price, and until now
+ * the only settlement rule with no test — it used to be welded to the
+ * `eth_call` that fed it, so asking it a question meant standing up a chain.
+ * The reader is now an argument, and these are the questions worth asking.
+ */
+describe("walkToRoundInForce", () => {
+  /** A feed's history, newest first, as `(id, updatedAt)` pairs. */
+  const history = (...stamps: number[]) => {
+    const byId = new Map<bigint, FeedRound>()
+    stamps.forEach((updatedAt, i) => {
+      const id = BigInt(stamps.length - i)
+      byId.set(id, { roundId: id, answer: BigInt(1_000 + i), updatedAt })
+    })
+    let reads = 0
+    return {
+      newest: byId.get(BigInt(stamps.length))!,
+      reads: () => reads,
+      read: (id: bigint) => {
+        reads++
+        const r = byId.get(id)
+        if (!r) throw new Error(`Feed round ${id} is unset`)
+        return r
+      },
+    }
+  }
+
+  test("returns the round it starts on when that one is already in force", () => {
+    const h = history(1_000, 900)
+    expect(walkToRoundInForce(h.read, h.newest, 1_500).updatedAt).toBe(1_000)
+    expect(h.reads()).toBe(0)
+  })
+
+  /**
+   * The boundary that decides a market settling exactly at the closing bell:
+   * a round published ON the target was in force at it.
+   */
+  test("counts a round published exactly on the target as in force", () => {
+    const h = history(1_000, 900)
+    expect(walkToRoundInForce(h.read, h.newest, 1_000).updatedAt).toBe(1_000)
+    expect(h.reads()).toBe(0)
+  })
+
+  test("walks back past every round published after the target", () => {
+    const h = history(5_000, 4_000, 3_000, 2_000, 1_000)
+    expect(walkToRoundInForce(h.read, h.newest, 2_500).updatedAt).toBe(2_000)
+    expect(h.reads()).toBe(3)
+  })
+
+  /**
+   * CSPX, as it actually happened. One round on Monday and nothing after it,
+   * so expiry resolves to Monday's print and the close — twelve hours earlier
+   * — resolves back to Sunday's. Those two being DIFFERENT is what let the
+   * market settle instead of voiding.
+   */
+  test("reproduces the CSPX settlement, both lookups", () => {
+    const sunday = 1_786_874_616
+    const monday = 1_786_961_040
+    const close = 1_786_953_600
+    const expiry = 1_786_996_800
+
+    const h = history(monday, sunday)
+    const atExpiry = walkToRoundInForce(h.read, h.newest, expiry)
+    expect(atExpiry.updatedAt).toBe(monday)
+
+    // The second lookup continues from where the first stopped, which is the
+    // whole reason `from` is a parameter rather than always the latest round.
+    const atClose = walkToRoundInForce(h.read, atExpiry, close)
+    expect(atClose.updatedAt).toBe(sunday)
+    expect(atClose.answer).not.toBe(atExpiry.answer)
+  })
+
+  test("gives up rather than walking forever", () => {
+    const h = history(9_000, 8_000, 7_000, 6_000, 5_000)
+    expect(() => walkToRoundInForce(h.read, h.newest, 1_000, 3)).toThrow(/within 3 rounds/)
+  })
+
+  /**
+   * Walking off the start of a feed's history throws from the reader, not from
+   * here. Worth pinning: the message a caller sees decides whether a market
+   * voids with a useful reason or an opaque one.
+   */
+  test("surfaces the reader's own error when the history runs out", () => {
+    const h = history(5_000, 4_000)
+    expect(() => walkToRoundInForce(h.read, h.newest, 1_000)).toThrow(/is unset/)
   })
 })
