@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { attributeFees, buildLpPosition, lpPnl, markPoolValue, markShares } from "./lp";
 import { MarketStatus, Outcome, type LpEvent, type Market, type TradeEvent } from "./types";
-import { amm0 } from "./identity.test";
+import { amm0 } from "./fixtures";
 
 /**
  * Liquidity valuation.

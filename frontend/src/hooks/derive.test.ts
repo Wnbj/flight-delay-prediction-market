@@ -7,7 +7,7 @@ import {
   type Market,
   type TradeEvent,
 } from "../lib/types";
-import { amm0, crypto0, flight0, stock0 } from "../lib/identity.test";
+import { amm0, crypto0, flight0, stock0 } from "../lib/fixtures";
 
 /**
  * Portfolio and leaderboard derivation.

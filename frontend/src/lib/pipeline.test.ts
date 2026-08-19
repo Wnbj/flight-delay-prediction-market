@@ -8,7 +8,7 @@ import type {
   SettlementLog,
 } from "./settlementEvents";
 import { Outcome, type LpEvent, type Market } from "./types";
-import { amm0, crypto0, flight0 } from "./identity.test";
+import { amm0, crypto0, flight0 } from "./fixtures";
 import { CRYPTO_MARKET_ADDRESS, AMM_MARKET_ADDRESS,
   attestationFor,
   DON_FORWARDER,

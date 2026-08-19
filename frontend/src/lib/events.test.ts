@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { groupIntoEvents, isLadder, ladderFor } from "./events";
 import { MarketStatus, type Market } from "./types";
-import { amm0, crypto0, flight0, stock0 } from "./identity.test";
+import { amm0, crypto0, flight0, stock0 } from "./fixtures";
 import { marketKey } from "./chain";
 
 /**

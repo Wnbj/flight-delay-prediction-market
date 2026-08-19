@@ -7,7 +7,7 @@ import {
   totalPool,
 } from "./pricing";
 import { MarketStatus, Outcome, type Market } from "./types";
-import { amm0, crypto0 } from "./identity.test";
+import { amm0, crypto0 } from "./fixtures";
 
 /**
  * The payout maths the UI shows before anyone signs anything.
