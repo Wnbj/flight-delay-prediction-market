@@ -524,8 +524,13 @@ contract address in `config.staging.json` populated:
 (`main.ts`), so emptying `reserveContractAddress` moves every sweep down by
 one. This table has already been wrong once for exactly that reason — the
 reserve handler was added at position 3 and the sweeps shifted underneath the
-line that used to say 3/4/5. Verified 2026-08-17 by running index 5 and 6 and
-reading which sweep announced itself.
+line that used to say 3/4/5.
+
+**The table is now asserted by a test** (`describe("trigger indices")` in
+`cre/settlement/settlement.test.ts`), which calls the real `initWorkflow` and
+compares handler identities rather than restating the rule. Insert a handler
+and the suite fails, so this table has to move in the same commit. Confirmed
+both ways: adding one breaks two tests, removing it restores 44 green.
 
 ### Verified against historical feed rounds
 

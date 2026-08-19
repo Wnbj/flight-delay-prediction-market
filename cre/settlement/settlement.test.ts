@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import {
   checkRoundUsable,
+  initWorkflow,
   idsToScan,
   newReadBudget,
   outcomeFor,
@@ -9,7 +10,15 @@ import {
   reconcileVenuePrices,
   resolveStockOutcome,
   toScaledPrice,
+  onCryptoSettlementRequested,
+  onReserveSettlementRequested,
+  onSettlementRequested,
+  onStockSettlementRequested,
+  onSweepCrypto,
+  onSweepFlights,
+  onSweepStocks,
   walkToRoundInForce,
+  type Config,
   type FeedRound,
 } from "./main"
 
@@ -384,5 +393,72 @@ describe("walkToRoundInForce", () => {
   test("surfaces the reader's own error when the history runs out", () => {
     const h = history(5_000, 4_000)
     expect(() => walkToRoundInForce(h.read, h.newest, 1_000)).toThrow(/is unset/)
+  })
+})
+
+
+/**
+ * Which handler each `--trigger-index` selects.
+ *
+ * These numbers are positions in a list `initWorkflow` builds at runtime, not
+ * fixed ids, and a handler only joins the list when its contract address is
+ * non-empty. Adding the reserve handler at position 3 once renumbered all three
+ * cron sweeps and left RUNBOOK.md telling the reader to settle flights with
+ * index 3 — which by then was the reserve log handler. Nothing failed loudly;
+ * the wrong sweep simply ran.
+ *
+ * So the ordering is asserted against the real `initWorkflow` rather than
+ * restated here. Insert a handler and these break, which is the point: the
+ * table in RUNBOOK.md has to move in the same commit.
+ */
+describe("trigger indices", () => {
+  const fullConfig = {
+    flightContractAddress: "0x0900000000000000000000000000000000000001",
+    chainSelectorName: "ethereum-testnet-sepolia",
+    apiUrl: "https://example.invalid",
+    apiKey: "unused",
+    gasLimit: "1000000",
+    cryptoContractAddress: "0x0900000000000000000000000000000000000002",
+    stockContractAddress: "0x0900000000000000000000000000000000000003",
+    reserveContractAddress: "0x0900000000000000000000000000000000000004",
+    ammContractAddress: "0x0900000000000000000000000000000000000005",
+    sweepSchedule: "0 0,30 * * * *",
+  } as Config
+
+  const handlersFor = (overrides: Partial<Config> = {}) =>
+    initWorkflow({ ...fullConfig, ...overrides }).map((h) => h.fn)
+
+  test("match the table in RUNBOOK.md when every address is configured", () => {
+    expect(handlersFor()).toEqual([
+      onSettlementRequested, // 0 — flight log
+      onCryptoSettlementRequested, // 1 — crypto log, also serves the AMM
+      onStockSettlementRequested, // 2 — stock log
+      onReserveSettlementRequested, // 3 — reserve log
+      onSweepFlights, // 4
+      onSweepCrypto, // 5
+      onSweepStocks, // 6
+    ])
+  })
+
+  /**
+   * The renumbering itself, pinned. Emptying one address does not disable one
+   * index — it slides every later handler down by one, which is exactly how the
+   * documented indices went wrong the first time.
+   */
+  test("shift down when a contract address is left empty", () => {
+    const withoutReserve = handlersFor({ reserveContractAddress: "" })
+
+    expect(withoutReserve).toHaveLength(6)
+    expect(withoutReserve[3]).toBe(onSweepFlights)
+    expect(withoutReserve.indexOf(onReserveSettlementRequested)).toBe(-1)
+  })
+
+  test("drop the sweeps entirely when no schedule is set", () => {
+    expect(handlersFor({ sweepSchedule: "" })).toEqual([
+      onSettlementRequested,
+      onCryptoSettlementRequested,
+      onStockSettlementRequested,
+      onReserveSettlementRequested,
+    ])
   })
 })
