@@ -72,8 +72,11 @@ cre/preflight.sh staging
 
 Reads every contract in `config.staging.json` and compares three values against
 what the simulate path actually sends: the expected workflow name, the expected
-author, and the forwarder. Read-only — no key, no transaction. Exit status is 0
-only when every row passes.
+author, and the forwarder. It then compares those same addresses against the
+frontend's defaults in `config.ts`, which are kept in a second file with
+nothing between them — a redeploy that updates one and not the other leaves the
+app showing markets nobody settles. Read-only — no key, no transaction. Exit
+status is 0 only when every row passes.
 
 All three are worth a machine rather than an eye, because all three fail the
 same way: the receiver reverts inside `onReport`, the forwarder swallows it into
